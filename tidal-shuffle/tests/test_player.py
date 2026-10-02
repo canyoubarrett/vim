@@ -130,7 +130,7 @@ class QueueCdp(FakeCdp):
 
 
 def test_stock_tidal_queue_is_used_and_checked():
-    cfg = load_config(env={}).player
+    cfg = load_config(overrides={"player": {"tidal_queue": True}}, env={}).player
     cdp = QueueCdp(["ok"])
     p = TidalPlayer(cfg, cdp)
     p.ensure_ready()
@@ -142,7 +142,7 @@ def test_stock_tidal_queue_is_used_and_checked():
 
 
 def test_unreadable_queue_is_given_up_at_once():
-    cfg = load_config(env={}).player
+    cfg = load_config(overrides={"player": {"tidal_queue": True}}, env={}).player
     logs = []
     cdp = QueueCdp(["unreadable"])
     p = TidalPlayer(cfg, cdp, log=logs.append)
@@ -153,10 +153,19 @@ def test_unreadable_queue_is_given_up_at_once():
 
 
 def test_queue_that_does_not_take_twice_is_given_up():
-    cfg = load_config(env={}).player
+    cfg = load_config(overrides={"player": {"tidal_queue": True}}, env={}).player
     cdp = QueueCdp(["not-next", "not-next"])
     p = TidalPlayer(cfg, cdp, log=lambda m: None)
     p.ensure_ready()
     t = TidalTrack(id="4", title="T", artist="A")
     assert not p.queue_next(t) and p.supports_queue()
     assert not p.queue_next(t) and not p.supports_queue()
+
+
+def test_stock_tidal_queue_is_off_by_default():
+    cfg = load_config(env={}).player
+    cdp = QueueCdp(["ok"])
+    p = TidalPlayer(cfg, cdp)
+    p.ensure_ready()
+    assert not p.supports_queue()
+    assert not p.queue_next(TidalTrack(id="4", title="T", artist="A")) and cdp.asked == []

@@ -389,6 +389,19 @@ class ShuffleLoop:
             st.pending = np
         return True
 
+    def _queued_pick_stalled(self, now: float) -> bool:
+        """A pick was handed to TIDAL's queue, the song is over, and TIDAL did not
+        start it (it paused at the end, or sits on a blank entry)."""
+        st = self.state
+        if st.queued is None or st.handed_off or st.current is None or st.plan is None:
+            return False
+        duration = st.current.duration or st.plan.seed.duration
+        if not duration:
+            return False
+        played = now - st.started_at
+        paused_at_end = st.current.playing is False and played >= duration - 1.5
+        return paused_at_end or played > duration + 2.5
+
     def step(self, dry_run: bool = False) -> float:
         """Run one iteration; returns how long to sleep before the next one."""
         st = self.state
@@ -396,6 +409,13 @@ class ShuffleLoop:
         now = self._clock()
         np = self.nowplaying.read()
         tidal_live = self._observe(np, now)
+        if not dry_run and self._queued_pick_stalled(now):
+            pick = st.queued
+            self.log(f"⚠ TIDAL did not move on to the queued {pick.track.label()}; starting it directly")
+            st.queued = None
+            st.expected = None
+            if self.handoff(now):
+                return cfg.near_end_poll_interval
 
         if tidal_live:
             self._announced_idle = False

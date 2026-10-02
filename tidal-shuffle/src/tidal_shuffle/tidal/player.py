@@ -69,7 +69,9 @@ class TidalPlayer:
         return self.luna_available() or self.cdp_luna_available() or self._store_queue_possible()
 
     def _store_queue_possible(self) -> bool:
-        return self._store_queue_failures < 2 and self.cdp_available()
+        # Off by default: the stock app accepts a bare track id into its queue
+        # but shows it as a blank entry and stops there instead of playing it.
+        return self.config.tidal_queue and self._store_queue_failures < 2 and self.cdp_available()
 
     def queue_next(self, track: TidalTrack) -> bool:
         self._queued_via = None

@@ -604,3 +604,42 @@ def test_queued_pick_that_is_no_longer_next_is_started_at_the_end(tmp_path):
     assert world.played == ["t-Next One"]
     assert any("no longer next" in m for m in logs)
     assert world.fillers == 0
+
+
+def test_queued_pick_that_tidal_never_plays_is_started_directly(tmp_path):
+    """TIDAL accepted the queue entry but paused at the end of the song instead."""
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    world.start("Seed Song", "Seed Artist", duration=60, tidal_id="seed")
+    def read_paused_at_end(orig=world.read):
+        if world.track and world.track[3] == "seed" and clock.wall - world.start_wall >= 60:
+            return NowPlaying("Seed Song", "Seed Artist", duration=60, elapsed=60, timestamp=clock.wall,
+                              playing=False, bundle_id=TIDAL_BUNDLE_ID, tidal_id="seed")
+        return orig()
+    world.read = read_paused_at_end
+    for _ in range(200):
+        loop.step(); clock.sleep(0.4)
+        if world.played:
+            break
+    assert world.queued.id == "t-Next One"
+    assert world.played == ["t-Next One"]
+    assert clock.wall - 50000.0 < 60 + 5   # within a few seconds of the end
+    assert any("did not move on" in m for m in logs)
+
+
+def test_queued_pick_on_a_blank_entry_is_started_directly(tmp_path):
+    """TIDAL moved to a blank queue entry: no title, so nothing TIDAL-like is reported."""
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    world.start("Seed Song", "Seed Artist", duration=60, tidal_id="seed")
+    def read_blank_after_end(orig=world.read):
+        if world.track and world.track[3] == "seed" and clock.wall - world.start_wall >= 60:
+            return None
+        return orig()
+    world.read = read_blank_after_end
+    for _ in range(200):
+        loop.step(); clock.sleep(0.4)
+        if world.played:
+            break
+    assert world.played == ["t-Next One"]
+    assert clock.wall - 50000.0 < 60 + 5

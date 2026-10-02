@@ -118,6 +118,7 @@ class PlayerConfig:
     tidal_app: str = "/Applications/TIDAL.app"
     auto_relaunch: bool = True
     luna_port: int = 24123
+    tidal_queue: bool = False
 
 
 @dataclass
@@ -247,6 +248,7 @@ player:
   tidal_app: /Applications/TIDAL.app
   auto_relaunch: true       # relaunch TIDAL with the debug port if it lacks it
   luna_port: 24123          # TidaLuna API plugin port (optional client mod)
+  tidal_queue: false        # experimental: queue picks in the stock app's own queue (shows a blank track)
 
 spotify:
   client_id: ""             # optional; from https://developer.spotify.com/dashboard
@@ -504,6 +506,7 @@ def _build(data: Mapping) -> AppConfig:
         "tidal_app": lambda v, n: str(v).strip() or "/Applications/TIDAL.app",
         "auto_relaunch": _as_bool,
         "adaptive_handoff": _as_bool,
+        "tidal_queue": _as_bool,
         "luna_port": lambda v, n: int(_as_number(v, n, int, 1, 65535)),
     })
     spotify = dict(_section(data, "spotify"))

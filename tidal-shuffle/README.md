@@ -73,10 +73,8 @@ Spotify for the song's radio in the background, chooses the next song plus
 two backups, and hands it to TIDAL. Skip to something else yourself and it
 simply follows your choice.
 
-**Timing.** Where TIDAL's own play queue can be used, the pick is put right
-after the current song and TIDAL moves to it by itself, with no gap and
-nothing cut off. Otherwise Tidal Shuffle opens the pick's page about ten
-seconds before the end and starts it just before the end. TIDAL takes a
+**Timing.** Tidal Shuffle opens the pick's page about ten seconds before
+the end and starts it just before the end. TIDAL takes a
 moment to start a song, so Tidal Shuffle measures how long that really takes
 on your Mac (from the position macOS reports for the new song) and starts
 that much earlier, plus a second of margin; never less than
@@ -165,12 +163,13 @@ on your Mac. If none does, run `tidal-shuffle inspect "Title - Artist"`: it
 opens that song's page and prints what the play logic sees there (paste it
 into a bug report). The selectors are in `src/tidal_shuffle/tidal/cdp.py`.
 
-**Gapless:** Tidal Shuffle puts each pick in TIDAL's own queue as the
-*next* track when it can read that queue (it checks that the pick really is
-next, and again shortly before the end; if not, it falls back to starting
-the song itself). The community mod
-[TidaLuna](https://github.com/Inrixia/TidaLuna) with its API plugin is used
-for this too when it is installed.
+**Gapless (optional):** with the community mod
+[TidaLuna](https://github.com/Inrixia/TidaLuna) and its API plugin, Tidal
+Shuffle hands each pick to TIDAL's own queue as the *next* track instead.
+`player.tidal_queue: true` tries the same with the stock app's queue; it is
+off because the stock app shows the pick as a blank entry and stops there.
+Either way, if TIDAL has not moved on to the queued pick a couple of seconds
+after the song ends, Tidal Shuffle starts it itself.
 
 ## Sources
 

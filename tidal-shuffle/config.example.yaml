@@ -45,6 +45,7 @@ player:
   tidal_app: /Applications/TIDAL.app
   auto_relaunch: true       # relaunch TIDAL with the debug port if it lacks it
   luna_port: 24123          # TidaLuna API plugin port (optional client mod)
+  tidal_queue: false        # experimental: queue picks in the stock app's own queue (shows a blank track)
 
 spotify:
   client_id: ""             # optional; from https://developer.spotify.com/dashboard
