@@ -55,6 +55,7 @@ class CompositeBackend:
         self._wall = wall
         self.log = log or (lambda m: None)
         self._cdp_failures = 0
+        self._clock_anchor: Optional[tuple] = None  # (song, shown second, when it ticked over)
 
     def available(self) -> tuple[bool, str]:
         if self.media is not None:
@@ -115,6 +116,23 @@ class CompositeBackend:
             np.source = "cdp+" + (media.source or "media")
         else:
             np.duration = footer.duration
-            np.elapsed = footer.position
-            np.timestamp = now if footer.position is not None else None
+            np.elapsed, np.timestamp = self._smooth_clock(np, footer.position, now)
         return np
+
+    def _smooth_clock(self, np: NowPlaying, shown: Optional[float], now: float):
+        """The footer clock shows whole seconds. Anchor to the moment the shown
+        second last changed, so the position is known to within one poll rather
+        than up to a second behind (which made hand-offs near the end miss)."""
+        if shown is None:
+            self._clock_anchor = None
+            return None, None
+        key = np.tidal_id or np.key
+        anchor = getattr(self, "_clock_anchor", None)
+        if anchor is None or anchor[0] != key or anchor[1] != shown:
+            # a new second ticked over (or a new song): it started about now
+            self._clock_anchor = (key, shown, now)
+            return shown, now
+        _, _, since = anchor
+        if np.playing is False or now - since > 1.5:
+            return shown, now  # paused or the clock is not moving: no extrapolation
+        return shown, since

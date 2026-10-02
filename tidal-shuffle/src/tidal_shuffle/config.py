@@ -19,6 +19,8 @@ STRATEGIES = ("top", "weighted", "random", "discovery")
 SEED_MODES = ("current", "anchor", "window")
 NOWPLAYING_BACKENDS = ("auto", "media-control", "nowplaying-cli")
 PLAY_STRATEGIES = ("auto", "luna", "cdp", "open-url", "open-url-play")
+MEDIA_KEY_MODES = ("focus", "always", "off")
+HANDOFF_MODES = ("pause", "timed")
 
 
 class ConfigError(ValueError):
@@ -104,6 +106,8 @@ class ShuffleConfig:
 @dataclass
 class PlayerConfig:
     nowplaying_backend: str = "auto"
+    handoff_mode: str = "pause"
+    pause_before_end: float = 0.8
     handoff_seconds: float = 3.0
     adaptive_handoff: bool = True
     handoff_margin: float = 1.0
@@ -119,6 +123,8 @@ class PlayerConfig:
     auto_relaunch: bool = True
     luna_port: int = 24123
     tidal_queue: bool = False
+    terminal_keys: bool = True
+    media_keys: str = "focus"
 
 
 @dataclass
@@ -235,9 +241,14 @@ shuffle:
 
 player:
   nowplaying_backend: auto  # auto | media-control | nowplaying-cli
-  handoff_seconds: 3.0      # start the next song at least this many seconds before the end
-  adaptive_handoff: true    # learn how long TIDAL takes to start a song and start earlier if needed
-  handoff_margin: 1.0       # extra seconds on top of the learned start time
+  handoff_mode: pause       # pause: hold TIDAL at the very end, then start the pick (never cuts a song,
+                            #   never lets TIDAL's own next song in; a short silence while the pick loads)
+                            # timed: start the pick early enough to overlap TIDAL's start-up delay (gapless
+                            #   when the guess is right, but may clip the end of a song)
+  pause_before_end: 0.8     # pause mode: seconds before the end to hold TIDAL
+  handoff_seconds: 3.0      # timed mode: start the next song at least this many seconds before the end
+  adaptive_handoff: true    # timed mode: learn how long TIDAL takes to start a song and start earlier if needed
+  handoff_margin: 1.0       # timed mode: extra seconds on top of the learned start time
   prepare_seconds: 10.0     # open the next song's page this many seconds before the end
   poll_interval: 2.0        # seconds between now-playing checks
   near_end_poll_interval: 0.4
@@ -249,6 +260,8 @@ player:
   auto_relaunch: true       # relaunch TIDAL with the debug port if it lacks it
   luna_port: 24123          # TidaLuna API plugin port (optional client mod)
   tidal_queue: false        # experimental: queue picks in the stock app's own queue (shows a blank track)
+  terminal_keys: true       # space/n/b/q in the terminal running `tidal-shuffle run`
+  media_keys: focus         # focus: media keys control Tidal Shuffle while its terminal is in front | always | off
 
 spotify:
   client_id: ""             # optional; from https://developer.spotify.com/dashboard
@@ -495,6 +508,8 @@ def _build(data: Mapping) -> AppConfig:
         "nowplaying_backend": lambda v, n: _as_choice(v, n, NOWPLAYING_BACKENDS),
         "handoff_seconds": lambda v, n: _as_number(v, n, float, 0, 120),
         "handoff_margin": lambda v, n: _as_number(v, n, float, 0, 10),
+        "handoff_mode": lambda v, n: _as_choice(v, n, HANDOFF_MODES),
+        "pause_before_end": lambda v, n: _as_number(v, n, float, 0, 10),
         "poll_interval": lambda v, n: _as_number(v, n, float, 0.2, 60),
         "near_end_poll_interval": lambda v, n: _as_number(v, n, float, 0.1, 10),
         "plan_after_seconds": lambda v, n: _as_number(v, n, float, 0, 600),
@@ -507,6 +522,8 @@ def _build(data: Mapping) -> AppConfig:
         "auto_relaunch": _as_bool,
         "adaptive_handoff": _as_bool,
         "tidal_queue": _as_bool,
+        "terminal_keys": _as_bool,
+        "media_keys": lambda v, n: _as_choice(v, n, MEDIA_KEY_MODES),
         "luna_port": lambda v, n: int(_as_number(v, n, int, 1, 65535)),
     })
     spotify = dict(_section(data, "spotify"))

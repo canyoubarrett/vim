@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from concurrent.futures import Future
@@ -81,6 +82,10 @@ class ShuffleLoop:
         # learned from what macOS reports and kept between runs.
         self.timing_path = timing_path
         self.start_delay: Optional[float] = self._load_start_delay()
+        # Commands from the keyboard (terminal keys, media keys), any thread.
+        self.commands: "queue.Queue[str]" = queue.Queue()
+        self._wake = threading.Event()
+        self._quit = False
 
     # -- helpers --------------------------------------------------------------
     def remaining(self, np: Optional[NowPlaying], now: float) -> Optional[float]:
@@ -125,13 +130,16 @@ class ShuffleLoop:
 
     # -- hand-off timing --------------------------------------------------------
     def _load_start_delay(self) -> Optional[float]:
+        self._delay_samples: list[float] = []
         if self.timing_path is None:
             return None
         try:
-            v = float(json.loads(Path(self.timing_path).read_text()).get("start_delay"))
+            data = json.loads(Path(self.timing_path).read_text())
+            samples = data.get("samples") or [data.get("start_delay")]
+            self._delay_samples = [float(x) for x in samples if x is not None and 0.0 <= float(x) <= 15.0][-5:]
         except (OSError, ValueError, TypeError, AttributeError):
             return None
-        return v if 0.0 <= v <= 15.0 else None
+        return _median(self._delay_samples)
 
     def _save_start_delay(self) -> None:
         if self.timing_path is None or self.start_delay is None:
@@ -140,15 +148,18 @@ class ShuffleLoop:
             path = Path(self.timing_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"start_delay": round(self.start_delay, 2)}))
+            tmp.write_text(json.dumps({"start_delay": round(self.start_delay, 2),
+                                       "samples": [round(x, 2) for x in self._delay_samples]}))
             os.replace(tmp, path)
         except OSError:
             pass
 
     def handoff_lead(self) -> float:
-        """Seconds before the end to start the next song: the configured minimum,
-        or the learned start delay plus a safety margin when that is longer."""
+        """Seconds before the end to act. Pause mode: when to hold TIDAL. Timed
+        mode: the configured minimum, or the learned start delay plus a margin."""
         cfg = self.config.player
+        if cfg.handoff_mode == "pause":
+            return cfg.pause_before_end
         lead = cfg.handoff_seconds
         if cfg.adaptive_handoff and self.start_delay is not None:
             cap = max(cfg.handoff_seconds, cfg.prepare_seconds - 1.0)
@@ -172,9 +183,11 @@ class ShuffleLoop:
             return
         sample = min(15.0, max(0.0, (now - pos) - at))
         old = self.start_delay
-        # Being late is what hurts: adopt a longer delay at once, shorten slowly.
-        self.start_delay = sample if old is None or sample > old else 0.7 * old + 0.3 * sample
-        if old is None or abs(self.start_delay - old) >= 0.25:
+        # The median of the last few, so one slow start (a cold page, a slow
+        # network) cannot make every later hand-off cut songs short.
+        self._delay_samples = (self._delay_samples + [sample])[-5:]
+        self.start_delay = _median(self._delay_samples)
+        if self.config.player.handoff_mode == "timed" and (old is None or abs(self.start_delay - old) >= 0.25):
             self.log(f"  TIDAL took {sample:.1f}s to start the song; starting the next one {self.handoff_lead():.1f}s before the end")
         self._save_start_delay()
 
@@ -315,6 +328,16 @@ class ShuffleLoop:
             st.expected = pick
             return True
         self.log("  could not queue in TIDAL; will hand off near the end instead")
+        return False
+
+    def _handoff_at_end(self, now: float) -> bool:
+        """The song is about to end: in pause mode hold TIDAL first, so it can
+        neither move on to its own next song nor be cut short, then start the pick."""
+        paused = self.config.player.handoff_mode == "pause" and self.player.press("pause")
+        if self.handoff(now):
+            return True
+        if paused:
+            self.player.press("play")  # nothing could be started: let TIDAL carry on
         return False
 
     def handoff(self, now: float) -> bool:
@@ -471,7 +494,7 @@ class ShuffleLoop:
                     now = self._clock()
                     rem = self.remaining(None, now)
                 if not st.handed_off and rem is not None and rem <= lead:
-                    self.handoff(now)
+                    self._handoff_at_end(now)
             elif st.current.duration is None and not st.handed_off and (now - st.started_at) > 20 * 60:
                 self.log("no timing information for 20 minutes; skipping ahead")
                 self.handoff(now)
@@ -485,14 +508,85 @@ class ShuffleLoop:
             st.expected = None
             st.plan = None
 
+        delay = cfg.poll_interval
         if rem is not None and rem <= max(cfg.prepare_seconds, lead + 2.0, 10.0) and (st.queued is None or not st.queue_checked):
-            return cfg.near_end_poll_interval
-        return cfg.poll_interval
+            delay = cfg.near_end_poll_interval
+        if (rem is not None and rem > lead and not st.handed_off and st.queued is None
+                and st.plan is not None and st.plan.primary is not None):
+            delay = min(delay, max(0.05, rem - lead))  # wake up right on time for the hand-off
+        return delay
+
+    # -- keyboard commands ------------------------------------------------------
+    def post(self, command: str) -> None:
+        """Queue a command ("playpause", "next", "previous", "help", "quit"); thread safe."""
+        self.commands.put(command)
+        self._wake.set()
+
+    def handle_commands(self, dry_run: bool = False) -> None:
+        while True:
+            try:
+                command = self.commands.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self.handle_command(command, dry_run=dry_run)
+            except Exception as e:  # a key press must never stop the music
+                self.log(f"⚠ {command} failed: {e}")
+
+    def handle_command(self, command: str, dry_run: bool = False) -> None:
+        if command == "quit":
+            self._quit = True
+        elif command == "help":
+            from .controls import KEY_HELP
+
+            self.log(f"keys: {KEY_HELP}")
+        elif command == "playpause":
+            self.toggle_pause()
+        elif command == "next":
+            if dry_run:
+                self.log("⏭ (dry run: not skipping)")
+            elif self.state.current is None and self.nowplaying.read() is None:
+                self.log("⏭ nothing is playing")
+            else:
+                self.log("⏭ next pick")
+                if not self.skip_now():
+                    self.log("  nothing to skip to yet")
+        elif command == "previous":
+            if not self.player.press("previous"):
+                self.log("⏮ could not go back (TIDAL is not reachable over its debug port)")
+
+    def toggle_pause(self) -> bool:
+        cur = self.state.current
+        np = self.nowplaying.read()
+        playing = np.playing if np is not None and np.is_tidal and np.playing is not None else (cur.playing if cur else None)
+        target = "play" if playing is False else "pause"
+        if not self.player.press(target):
+            self.log(f"⚠ could not {target} TIDAL")
+            return False
+        if cur is not None:
+            cur.playing = target == "play"
+            if target == "play":
+                # resuming: the song continues from where it was
+                pos = np.position_at(self._wall()) if np is not None and np.is_tidal else None
+                if pos is not None:
+                    self.state.started_at = self._clock() - pos
+        self.log("▶ playing" if target == "play" else "⏸ paused")
+        return True
+
+    def _wait(self, delay: float) -> None:
+        if self._sleep is time.sleep:
+            self._wake.wait(delay)   # a key press ends the wait at once
+            self._wake.clear()
+        else:
+            self._sleep(delay)
 
     def run(self, dry_run: bool = False, once: bool = False, max_iterations: Optional[int] = None) -> None:
         iterations = 0
         try:
             while True:
+                self.handle_commands(dry_run=dry_run)
+                if self._quit:
+                    return
                 delay = self.step(dry_run=dry_run)
                 iterations += 1
                 if once and self.state.plan is not None:
@@ -501,7 +595,7 @@ class ShuffleLoop:
                     return
                 if self.state.planning is not None:
                     delay = min(delay, self.config.player.near_end_poll_interval)
-                self._sleep(max(0.05, delay))
+                self._wait(max(0.05, delay))
         finally:
             self.close()
 
@@ -520,3 +614,11 @@ class ShuffleLoop:
             self.plan_now(allow_queue=False)
         st.queued = None
         return self.handoff(self._clock())
+
+
+def _median(values: list) -> Optional[float]:
+    vals = sorted(values)
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2

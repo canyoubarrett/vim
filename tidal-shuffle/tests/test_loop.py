@@ -36,11 +36,15 @@ class World:
         self.start_delay = 0.0     # seconds between "play" and the song actually sounding
         self.pending = None        # (wall time it starts, track)
         self.fillers = 0           # how often TIDAL auto-advanced to a song we did not pick
+        self.paused_at = None      # elapsed seconds when paused (the song is frozen there)
+        self.presses = []
         self.still_next = True
 
     def start(self, title, artist, duration, tidal_id=None):
         self.track = (title, artist, duration, tidal_id)
         self.start_wall = self.clock.wall
+        self.playing = True
+        self.paused_at = None
 
     # NowPlayingBackend
     name = "world"
@@ -58,7 +62,9 @@ class World:
             return NowPlaying("Ad", "Spotify", bundle_id="com.spotify.client")
         title, artist, duration, tid = self.track
         elapsed = self.clock.wall - self.start_wall
-        if elapsed >= duration:
+        if not self.playing and self.paused_at is not None:
+            elapsed = self.paused_at   # paused: frozen, and TIDAL does not move on
+        if elapsed >= duration and self.playing:
             # TIDAL auto-advances to an album track we did not choose
             self.fillers += 1
             self.start("Album Filler", "Someone", 200, "filler")
@@ -90,6 +96,13 @@ class World:
             return PlayOutcome(True, "cdp/row", track.id)
         return PlayOutcome(False, "open-url", None, "opened")
     def press(self, control):
+        self.presses.append(control)
+        if control == "pause" and self.playing and self.track:
+            self.paused_at = self.clock.wall - self.start_wall
+            self.playing = False
+        elif control == "play" and not self.playing and self.paused_at is not None:
+            self.start_wall = self.clock.wall - self.paused_at
+            self.playing, self.paused_at = True, None
         return True
 
 
@@ -553,7 +566,7 @@ def _run_songs(loop, world, clock, n):
 def test_slow_tidal_start_is_learned_and_the_handoff_moves_earlier(tmp_path):
     many = [Candidate(f"Song {i}", f"Band {i}", score=1 - i / 100, duration=70) for i in range(12)]
     loop, world, clock, logs, _ = build(tmp_path, many, {"shuffle": {"strategy": "top", "artist_cooldown": 0},
-                                                       "player": {"plan_after_seconds": 1}})
+                                                       "player": {"plan_after_seconds": 1, "handoff_mode": "timed"}})
     loop.timing_path = tmp_path / "timing.json"
     world.start_delay = 4.0  # TIDAL takes 4 s to start a song; the 3 s default is too late
     world.start("Seed Song", "Seed Artist", duration=70, tidal_id="seed")
@@ -568,14 +581,14 @@ def test_slow_tidal_start_is_learned_and_the_handoff_moves_earlier(tmp_path):
     # remembered for the next run
     import json
     assert 3.5 <= json.loads((tmp_path / "timing.json").read_text())["start_delay"] <= 4.5
-    loop2, *_ = build(tmp_path, many)
+    loop2, *_ = build(tmp_path, many, {"player": {"handoff_mode": "timed"}})
     loop2.timing_path = tmp_path / "timing.json"
     loop2.start_delay = loop2._load_start_delay()
     assert abs(loop2.handoff_lead() - loop.handoff_lead()) < 0.01
 
 
 def test_fast_tidal_keeps_the_configured_lead(tmp_path):
-    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}, "player": {"handoff_mode": "timed"}})
     world.start_delay = 0.5
     world.start("Seed Song", "Seed Artist", duration=70, tidal_id="seed")
     _run_songs(loop, world, clock, 1)
@@ -586,7 +599,7 @@ def test_fast_tidal_keeps_the_configured_lead(tmp_path):
 
 
 def test_adaptive_handoff_can_be_turned_off(tmp_path):
-    loop, *_ = build(tmp_path, cands(), {"player": {"adaptive_handoff": False}})
+    loop, *_ = build(tmp_path, cands(), {"player": {"adaptive_handoff": False, "handoff_mode": "timed"}})
     loop.start_delay = 6.0
     assert loop.handoff_lead() == 3.0
 
@@ -643,3 +656,82 @@ def test_queued_pick_on_a_blank_entry_is_started_directly(tmp_path):
             break
     assert world.played == ["t-Next One"]
     assert clock.wall - 50000.0 < 60 + 5
+
+
+def test_keyboard_commands(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    pressed = []
+    world.press = lambda c: pressed.append(c) or True
+    world.start("Seed Song", "Seed Artist", duration=200, tidal_id="seed")
+    for _ in range(12):
+        loop.step(); clock.sleep(1)
+    loop.post("playpause")
+    loop.handle_commands()
+    assert pressed == ["pause"] and loop.state.current.playing is False
+    world.playing = False
+    loop.post("playpause")
+    loop.handle_commands()
+    assert pressed[-1] == "play"
+    loop.post("next")
+    loop.handle_commands()
+    assert world.played == ["t-Next One"]
+    loop.post("previous")
+    loop.post("help")
+    loop.handle_commands()
+    assert pressed[-1] == "previous" and any(m.startswith("keys:") for m in logs)
+
+
+def test_quit_key_stops_the_run(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands())
+    world.start("Seed Song", "Seed Artist", duration=200, tidal_id="seed")
+    loop.post("quit")
+    loop.run(max_iterations=50)
+    assert clock.mono == 1000.0  # stopped before doing anything
+
+
+def test_pause_mode_holds_tidal_at_the_end_so_nothing_is_cut_or_skipped(tmp_path):
+    many = [Candidate(f"Song {i}", f"Band {i}", score=1 - i / 100, duration=70) for i in range(12)]
+    loop, world, clock, logs, _ = build(tmp_path, many, {"shuffle": {"strategy": "top", "artist_cooldown": 0},
+                                                       "player": {"plan_after_seconds": 1}})
+    assert loop.config.player.handoff_mode == "pause"
+    world.start_delay = 4.0          # slow TIDAL: the old timing let TIDAL's own song in
+    world.start("Seed Song", "Seed Artist", duration=70, tidal_id="seed")
+    played_until = []
+    orig_press = world.press
+    def press(control):
+        if control == "pause":
+            played_until.append(clock.wall - world.start_wall)
+        return orig_press(control)
+    world.press = press
+    _run_songs(loop, world, clock, 4)
+    assert world.fillers == 0                                  # TIDAL never got to its own next song
+    assert all(69.0 <= t <= 70.0 for t in played_until), played_until   # each song played to its last half second
+    assert len(played_until) == 4
+
+
+def test_pause_mode_resumes_tidal_when_no_pick_can_be_started(tmp_path):
+    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.play = lambda track: (world.played.append(track.id), PlayOutcome(False, "cdp/row", None, "no button"))[1]
+    world.start("Seed Song", "Seed Artist", duration=60, tidal_id="seed")
+    for _ in range(200):
+        loop.step(); clock.sleep(0.4)
+        if world.played:
+            break
+    loop.step()
+    assert world.presses[:2] == ["pause", "play"]
+    assert world.playing
+
+
+def test_one_slow_start_does_not_make_every_handoff_early(tmp_path):
+    loop, *_ = build(tmp_path, cands(), {"player": {"handoff_mode": "timed"}})
+    loop._delay_samples = [2.0, 2.1, 1.9, 2.0]
+    loop.start_delay = 2.0
+    from tidal_shuffle.models import Pick
+    pick = Pick(candidate=cands()[0], track=TidalTrack(id="p", title="Next One", artist="Band A"))
+    loop.state.last_handoff = (100.0, pick)
+    np = NowPlaying("Next One", "Band A", duration=180, elapsed=0.0, timestamp=50000.0 + 9.0,
+                    bundle_id=TIDAL_BUNDLE_ID, tidal_id="p")
+    loop._wall = lambda: 50000.0 + 9.0
+    loop._learn_start_delay(np, 109.0)   # one 9 s outlier
+    assert loop.start_delay == 2.0
+    assert loop.handoff_lead() == 3.0

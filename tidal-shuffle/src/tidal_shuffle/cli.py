@@ -172,9 +172,9 @@ def run(dry_run, once, **kwargs):
     except RuntimeError as e:
         raise click.ClickException(str(e))
     _print_startup(rt, method)
-    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True,
                        timing_path=TIMING_FILE)
+    controls = _start_controls(cfg, loop)
     import signal
 
     def _stop(signum, frame):  # closing the terminal or `kill` should clean up like Ctrl+C
@@ -186,9 +186,32 @@ def run(dry_run, once, **kwargs):
         loop.run(dry_run=dry_run, once=once)
     except KeyboardInterrupt:
         rt.abort()
-        console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
     finally:
+        for c in controls:
+            c.stop()
         rt.close()
+    console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
+
+
+def _start_controls(cfg: AppConfig, loop) -> list:
+    """Terminal keys and media keys; returns what was started (to stop later)."""
+    from .controls import KEY_HELP, KeyReader, MediaKeyTap
+
+    started = []
+    keys = KeyReader(loop.post) if cfg.player.terminal_keys else None
+    if keys is not None and keys.start():
+        started.append(keys)
+        console.print(f"[dim]keys: {KEY_HELP} · Ctrl+C stops[/dim]")
+    else:
+        console.print("[dim]Press Ctrl+C to stop[/dim]")
+    if cfg.player.media_keys != "off":
+        tap = MediaKeyTap(loop.post, mode=cfg.player.media_keys, log=say)
+        if tap.start():
+            started.append(tap)
+            where = "while this window is in front" if cfg.player.media_keys == "focus" else "everywhere"
+            console.print(f"[dim]media keys ⏯ ⏭ ⏮ control Tidal Shuffle {where}[/dim]")
+    console.print()
+    return started
 
 
 @cli.command()

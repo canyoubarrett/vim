@@ -53,3 +53,29 @@ def test_availability_reasons():
     ok, reason = CompositeBackend(Dead(), DeadCdp()).available()
     assert not ok and "media-control" in reason
     assert CompositeBackend(Dead(), FakeCdp()).available()[0]
+
+
+def test_footer_clock_is_anchored_to_when_the_second_ticked_over():
+    """The footer shows whole seconds; the position must not lag up to a second."""
+    t = {"now": 100.0, "true": 29.6}   # real position 29.6 s, the footer shows "0:29"
+    cdp = FakeCdp()
+    def footer():
+        return CdpNowPlaying(title="Song", artist="Artist", artists=["Artist"], track_id="42", playing=True,
+                             position=float(int(t["true"])), duration=200.0)
+    cdp.now_playing = footer
+    media = StaticBackend([NowPlaying("Ad", "Spotify", bundle_id="com.spotify.client")] * 20)
+    comp = CompositeBackend(media, cdp, wall=lambda: t["now"])
+    def step(dt):
+        t["now"] += dt
+        t["true"] += dt
+        return comp.read()
+    comp.read()
+    for _ in range(3):
+        np = step(0.3)                 # crosses 30.0 at the second poll
+    np = step(0.3)                     # true 30.8
+    est = np.position_at(t["now"])
+    assert abs(est - t["true"]) <= 0.31, (est, t["true"])
+    # paused: no drifting forward
+    np = CompositeBackend(media, FakeCdp(CdpNowPlaying(title="Song", artist="Artist", track_id="42", playing=False,
+                                                       position=50.0, duration=200.0)), wall=lambda: 500.0).read()
+    assert np.position_at(510.0) == 50.0

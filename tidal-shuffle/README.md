@@ -55,7 +55,8 @@ The first runs trigger three prompts, all under *System Settings → Privacy
 * **Automation → Spotify**: to start the song radio and read its songs.
 * **Automation → System Events**: to keep Spotify's window hidden.
 * **Accessibility**: to use Spotify's search page when the song cannot be
-  found any other way (see below).
+  found any other way (see below), and for the media keys while Tidal
+  Shuffle's window is in front.
 
 ## Run it
 
@@ -73,14 +74,34 @@ Spotify for the song's radio in the background, chooses the next song plus
 two backups, and hands it to TIDAL. Skip to something else yourself and it
 simply follows your choice.
 
+**Keys.** While `tidal-shuffle run` is in front:
+
+| key | does |
+|-----|------|
+| `space` (or ⏯) | pause / play TIDAL |
+| `n` (or ⏭) | skip to a fresh pick now |
+| `b` (or ⏮) | TIDAL's previous track |
+| `q` | stop Tidal Shuffle |
+| `?` | list the keys |
+
+The keyboard's media keys normally go to TIDAL whatever window is in front.
+While the Tidal Shuffle terminal window is the frontmost app, Tidal Shuffle
+takes them over instead, so ⏭ means "next pick" rather than TIDAL's own next
+track; in any other app they control TIDAL as usual. This needs the
+Accessibility permission for your terminal (the same one the Spotify search
+uses). Headphone and Touch Bar buttons always go straight to TIDAL.
+`player.media_keys: always` takes the keys over everywhere, `off` never;
+`player.terminal_keys: false` turns the letter keys off.
+
 **Timing.** Tidal Shuffle opens the pick's page about ten seconds before
-the end and starts it just before the end. TIDAL takes a
-moment to start a song, so Tidal Shuffle measures how long that really takes
-on your Mac (from the position macOS reports for the new song) and starts
-that much earlier, plus a second of margin; never less than
-`player.handoff_seconds` (3 s). The measurement is kept in
-`~/.config/tidal-shuffle/timing.json`. If TIDAL still gets to its own next
-song first, the first hand-off of a run may be late; the next ones are not.
+the end. About 0.8 s before the end it pauses TIDAL, so TIDAL can neither
+move on to its own next song nor have the song cut short, and starts the
+pick; there is a short silence while TIDAL loads it.
+`player.handoff_mode: timed` instead presses play early enough to overlap
+TIDAL's start-up delay (measured on your Mac, the median of the last five
+hand-offs, plus `handoff_margin`; never less than `handoff_seconds`). That
+is gapless when TIDAL is consistent but clips the end of a song when it is
+not. The measurements are kept in `~/.config/tidal-shuffle/timing.json`.
 
 Diagrams of how the shuffle works (PDF): [the loop](docs/shuffle-loop.pdf),
 [from 30 radio songs to one pick](docs/shuffle-funnel.pdf),

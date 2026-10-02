@@ -20,6 +20,7 @@ dependencies = [
     "requests>=2.31",
     # Accessibility API, used to drive the Spotify app's search page (macOS only)
     "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

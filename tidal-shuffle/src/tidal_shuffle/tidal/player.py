@@ -237,7 +237,21 @@ class TidalPlayer:
     def press(self, control: str) -> bool:
         if self.cdp_available():
             try:
-                return self.cdp.press(control)
+                if self.cdp.press(control):
+                    return True
             except CdpError as e:
                 self.log(f"press {control} failed: {e}")
+        if control in ("play", "pause"):
+            # Without the debug port: ask macOS's Now Playing (TIDAL, normally).
+            return self._media_control(control)
         return False
+
+    def _media_control(self, command: str) -> bool:
+        import shutil
+
+        binary = shutil.which("media-control") or "/opt/homebrew/bin/media-control"
+        try:
+            r = self._run([binary, command], capture_output=True, text=True, timeout=5)
+        except Exception:
+            return False
+        return r.returncode == 0
