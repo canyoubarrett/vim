@@ -7,15 +7,8 @@ so it is crisp at any size and a tilt or a quarter-row shift costs nothing in
 quality. A braille text art file (---BIG--- / ---SMALL---) also works: its
 dots are taken as they are. The float is a
 slow bob with a faster overtone, a lazy sideways drift, and a tilt that leans
-into the drift, and the colour breathes slowly between two theme colours.
-
-Around it, a rainy night (``weather``): rain in two depths, drawn in braille
-dots so it falls smoothly, the far drops dim and slow, the near ones bright;
-a beam of light slanting down from above onto the water, with dust turning
-in it and the rain sparkling where it crosses; a water line below the logo
-with the logo's reflection, rippled and broken by the rain; rings where the
-drops land; and now and then lightning, which lights everything up twice.
-Paused, it all carries on in slow motion.
+into the drift; a soft shadow below shrinks and fades as the logo rises, and
+the colour breathes slowly between two theme colours.
 """
 
 from __future__ import annotations
@@ -25,22 +18,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from .fx import _hash, add
-
 Color = tuple[int, int, int]
 
 # braille dot bit -> (dx, dy) inside the 2x4 cell
 _BITS = {0x01: (0, 0), 0x02: (0, 1), 0x04: (0, 2), 0x40: (0, 3),
          0x08: (1, 0), 0x10: (1, 1), 0x20: (1, 2), 0x80: (1, 3)}
 _BIT_AT = {v: k for k, v in _BITS.items()}
-
-
-def _flip_bits(bits: int) -> int:
-    out = 0
-    for bit, (dx, dy) in _BITS.items():
-        if bits & bit:
-            out |= _BIT_AT[(dx, 3 - dy)]
-    return out
 
 ASSET = Path(__file__).parent / "assets" / "alter-era.txt"
 ASSET_SVG = Path(__file__).parent / "assets" / "alter-era.svg"
@@ -50,12 +33,6 @@ LOGO: Color = (203, 166, 247)      # mauve
 GLOW: Color = (245, 194, 231)      # pink
 SHADOW: Color = (49, 50, 68)       # surface0
 BG: Color = (30, 30, 46)           # base
-MOCHA = {"crust": (17, 17, 27), "mantle": (24, 24, 37), "base": (30, 30, 46), "surface0": (49, 50, 68),
-         "surface1": (69, 71, 90), "surface2": (88, 91, 112), "overlay0": (108, 112, 134),
-         "overlay1": (127, 132, 156), "overlay2": (147, 153, 178), "sky": (137, 220, 235),
-         "blue": (137, 180, 250), "lavender": (180, 190, 254), "rosewater": (245, 224, 220),
-         "yellow": (249, 226, 175), "text": (205, 214, 244)}
-_FLIP = [_flip_bits(b) for b in range(256)]
 
 
 def lerp(a: Color, b: Color, t: float) -> Color:
@@ -217,8 +194,7 @@ class LogoScene:
     """Renders frames as rows of (char, colour or None) cells."""
 
     def __init__(self, art_path: Optional[Path] = None, logo: Color = LOGO, glow: Color = GLOW,
-                 shadow: Color = SHADOW, bg: Color = BG, cell_aspect: float = 0.5, weather: bool = True,
-                 palette: Optional[dict] = None):
+                 shadow: Color = SHADOW, bg: Color = BG, cell_aspect: float = 0.5):
         """``art_path``: an .svg (traced) or a braille text art file; default: the
         bundled vector logo. ``cell_aspect``: a terminal cell's width / height."""
         self.polylines: list = []
@@ -237,8 +213,6 @@ class LogoScene:
         self.arts = [a for a in (big, small) if a]
         self._dots = {id(a): art_to_dots(a) for a in self.arts}
         self.logo, self.glow, self.shadow, self.bg = logo, glow, shadow, bg
-        self.weather = weather
-        self.p = dict(MOCHA, **(palette or {}))
         self._last_t: Optional[float] = None
         self._float_t = 0.0      # float time: runs at full speed while playing, slowly while paused
         self.shown_at: Optional[float] = None
@@ -251,7 +225,7 @@ class LogoScene:
             ah = len(art)
             if not aw or not ah:
                 continue
-            room_w, room_h = width - 6, height - 4      # margin for the float and the shadow
+            room_w, room_h = width - 3, height - 2      # margin for the float and the shadow
             scale = min(1.0, room_w / aw, room_h / ah)
             if scale >= 0.6 or (best is None and scale > 0.25):
                 if best is None or scale * ah > best[1] * len(best[0]):
@@ -272,14 +246,16 @@ class LogoScene:
         """Trace the vector logo into braille cells at this frame's pose."""
         x0, y0, x1, y1 = self._vb
         bw, bh = max(1e-6, x1 - x0), max(1e-6, y1 - y0)
-        avail_w = max(4, (width - 4) * 2)
-        avail_h = max(4, (height - 3) * 4 - 10)          # room for the bob and the shadow
+        # as big as the panel allows, leaving just the room the float needs:
+        # 5.2 dots of drift each side, 4.1 dots of bob, and the shadow's row
+        avail_w = max(4, (width - 1) * 2 - 14)
+        avail_h = max(4, (height - 1) * 4 - 11)
         scale = min(avail_w * self.dot_ratio / bw, avail_h / bh)   # dots (vertical) per unit
         mx, my = (x0 + x1) / 2, (y0 + y1) / 2
         dx, dy, tilt = self.logo_pose(t)
         c, s = math.cos(tilt), math.sin(tilt)
         cx = width * 2 / 2 + dx
-        cy = (height - 2) * 4 / 2 + dy
+        cy = (height - 1) * 4 / 2 + dy
         dots: set = set()
         for line in self.polylines:
             prev = None
@@ -318,7 +294,7 @@ class LogoScene:
         dots = self._dots[id(art)]
         dx, dy, tilt = self.logo_pose(t)
         cx = width * 2 / 2 + dx
-        cy = (height - 2) * 4 / 2 + dy          # leave the bottom rows for the shadow
+        cy = (height - 1) * 4 / 2 + dy          # leave the bottom row for the shadow
         c, s = math.cos(tilt), math.sin(tilt)
         cells: dict[tuple[int, int], int] = {}
         min_c, max_c, max_r = 10 ** 9, -1, -1
@@ -337,20 +313,15 @@ class LogoScene:
         rise = (3.2 + 0.9 - dy) / (2 * (3.2 + 0.9))   # 1 at the top of the bob, 0 at the bottom
         return cells, rise, (min_c, max_c, max_r)
 
-    def frame(self, width: int, height: int, now: float, playing: bool = True) -> list:
-        """One frame: ``height`` rows of ``width`` cells, (char, colour) or
-        (char, colour, bold, background) with the weather."""
+    def frame(self, width: int, height: int, now: float, playing: bool = True) -> list[list[tuple[str, Optional[Color]]]]:
+        """One frame: ``height`` rows of ``width`` (char, colour) cells."""
         width, height = max(1, width), max(1, height)
         dt = 0.0 if self._last_t is None else max(0.0, min(0.5, now - self._last_t))
         self._last_t = now
         if self.shown_at is None:
             self.shown_at = now
         self._float_t += dt if playing else dt * 0.35     # paused: it keeps drifting, slowly
-        if self.weather and height >= 8 and width >= 16:
-            return self._weather_frame(width, height, now)
-        return self._plain_frame(width, height, now)
 
-    def _plain_frame(self, width: int, height: int, now: float) -> list:
         grid: list[list[tuple[str, Optional[Color]]]] = [[(" ", None)] * width for _ in range(height)]
         cells, rise, (left, right, bottom) = self._logo_cells(width, height, self._float_t)
         if not cells:
@@ -370,212 +341,6 @@ class LogoScene:
         for (row, col), bits in cells.items():
             grid[row][col] = (chr(0x2800 + bits), color)
         return grid
-
-
-    # -- the rainy night ---------------------------------------------------------------
-    def lightning(self, t: float) -> tuple[float, int, float]:
-        """(brightness 0..1, strike number, seconds since it struck) at scene time t."""
-        period = 23.0
-        k = int(t // period)
-        t0 = k * period + 3.0 + _hash(k, 77) * 15.0
-        age = t - t0
-        if age < 0 or age > 1.4 or _hash(k, 78) < 0.25:      # some windows stay dark
-            return 0.0, k, age
-        env = math.exp(-age * 9.0)
-        if age > 0.2:
-            env += 0.75 * math.exp(-(age - 0.2) * 7.0)          # the second, longer flash
-        return min(1.0, env), k, age
-
-    def _weather_frame(self, W: int, H: int, now: float) -> list:
-        p = self.p
-        t = self._float_t
-        fade = smoothstep((now - self.shown_at) / 1.6)
-        gy = max(4, int(H * 0.72))                      # the water line
-        flash, strike, strike_age = self.lightning(t)
-        sky_top, horizon = p["crust"], lerp(p["base"], p["surface0"], 0.55)
-        water_top, water_bottom = p["mantle"], p["crust"]
-        flash_col = p["lavender"]
-        beam_col = p["rosewater"]
-
-        # the logo and where it is: the beam lands under it
-        cells, rise, (left, right, bottom) = self._logo_cells(W, gy + 2, t)
-        logo_mid = (left + right) / 2 if cells else W / 2
-        x_top = W * 0.16 + 2.0 * math.sin(t * 0.05)
-        x_bot = logo_mid
-        breathe = 0.82 + 0.12 * math.sin(t * 0.7) + 0.06 * math.sin(t * 2.9)
-        half_bot = max(3.0, W * 0.2)
-
-        def beam_at(x: float, y: float) -> float:
-            if y > gy:
-                return 0.0
-            u = (y + 0.5) / gy
-            axis = x_top + (x_bot - x_top) * u
-            half = 1.2 + (half_bot - 1.2) * u
-            d = (x - axis) / half
-            if d * d >= 1:
-                return 0.0
-            shafts = 0.78 + 0.22 * math.sin(d * 9.0 + t * 0.6)
-            return (1 - d * d) ** 1.5 * (0.35 + 0.65 * u) * breathe * shafts
-
-        # backgrounds: sky with a glow at the horizon, the beam, the water and its pool of light
-        grid: list = []
-        beam_map: list = []
-        for y in range(H):
-            row, brow = [], []
-            for x in range(W):
-                if y < gy:
-                    u = y / max(1, gy - 1)
-                    bg = lerp(sky_top, horizon, u * u)
-                    b = beam_at(x, y)
-                    if b > 0:
-                        bg = lerp(bg, beam_col, b * 0.26)
-                else:
-                    v = (y - gy) / max(1, H - gy)
-                    bg = lerp(water_top, water_bottom, v)
-                    dx = (x - x_bot) / (W * 0.24)
-                    dy = (y - gy) / max(1.0, (H - gy) * 0.9)
-                    b = max(0.0, 1 - dx * dx - dy * dy) * 0.6 * breathe
-                    if b > 0:
-                        bg = lerp(bg, beam_col, b * 0.2)
-                if flash:
-                    bg = lerp(bg, flash_col, flash * (0.32 if y < gy else 0.2))
-                row.append([" ", None, False, bg])
-                brow.append(b)
-            grid.append(row)
-            beam_map.append(brow)
-
-        # the water: drifting ripple lines, glints in the pool of light
-        for y in range(gy, H):
-            for x in range(W):
-                cell = grid[y][x]
-                wave = math.sin(x * 0.31 + y * 1.7 - t * 1.1) + 0.5 * math.sin(x * 0.11 - t * 0.6 + y)
-                if wave > 1.2:
-                    cell[0], cell[1] = ("─" if wave > 1.35 else "╌"), lerp(cell[3], p["surface2"], 0.45)
-                b = beam_map[y][x]
-                if b > 0.15 and _hash(x, y, int(t * 5)) > 0.84:
-                    cell[0], cell[1] = "~", lerp(cell[3], beam_col, 0.35 + 0.5 * b)
-        for x in range(W):                               # the water line itself
-            cell = grid[gy][x]
-            if cell[0] == " ":
-                cell[0], cell[1] = "▁", lerp(cell[3], p["surface1"], 0.6)
-
-        # dust turning in the beam
-        for i in range(max(6, W * gy // 60)):
-            u = _hash(i, 41)
-            y = (u * gy + t * (0.25 + 0.3 * _hash(i, 42))) % gy
-            axis = x_top + (x_bot - x_top) * (y / gy)
-            x = axis + (_hash(i, 43) - 0.5) * 2 * (1.2 + (half_bot - 1.2) * (y / gy)) + math.sin(t * 0.5 + i) * 0.8
-            xi, yi = int(x), int(y)
-            if 0 <= xi < W and 0 <= yi < gy:
-                b = beam_map[yi][xi]
-                if b > 0.1:
-                    tw = 0.5 + 0.5 * math.sin(t * 2.0 + i * 1.7)
-                    grid[yi][xi][0] = "·" if tw < 0.7 else "˙"
-                    grid[yi][xi][1] = lerp(grid[yi][xi][3], beam_col, 0.4 + 0.6 * b * tw)
-
-        # rain, in braille dots: far (dim, slow, short) and near (bright, fast)
-        rain_bits: dict = {}
-        rain_col: dict = {}
-        splashes = []
-        layers = (
-            (W * H // 9, 34.0, 3, lerp(horizon, p["overlay0"], 0.6), 0.10, 0.35),
-            (W * H // 34, 64.0, 6, p["overlay2"], 0.16, 1.0),
-        )
-        for li, (n, speed, length, color, slant, depth) in enumerate(layers):
-            for i in range(n):
-                hit = gy * 4 + int((H - gy) * 4 * (_hash(i, li, 3) * 0.55 * depth + (0.0 if li == 0 else 0.25)))
-                hit = min(H * 4 - 1, hit)
-                spd = speed * (0.85 + 0.3 * _hash(i, li, 4))
-                total = hit + length + spd * 0.45
-                pos = (t * spd + _hash(i, li, 2) * total) % total
-                x0 = _hash(i, li, 1) * (W * 2 + slant * H * 4) - slant * H * 4
-                if pos < hit + length:
-                    for k in range(length):
-                        yd = pos - k
-                        if 0 <= yd < hit:
-                            xd = int(x0 + slant * yd)
-                            yi = int(yd)
-                            col, row = xd // 2, yi // 4
-                            if 0 <= col < W and 0 <= row < H:
-                                key = (row, col)
-                                rain_bits[key] = rain_bits.get(key, 0) | _BIT_AT[(xd % 2, yi % 4)]
-                                if li or key not in rain_col:
-                                    rain_col[key] = color
-                elif hit >= gy * 4 and (li or _hash(i, 9) > 0.8):   # most far drops land unseen
-                    age = (pos - hit - length) / (spd * 0.45)
-                    splashes.append((int(x0 + slant * hit) // 2, hit // 4, age, li))
-        for (row, col), bits in rain_bits.items():
-            if (row, col) in cells:
-                continue                                 # the logo is in front of the far rain
-            cell = grid[row][col]
-            b = beam_map[row][col]
-            color = rain_col[(row, col)]
-            if b > 0:
-                color = lerp(color, beam_col, min(1.0, b * 1.2))   # drops sparkle in the light
-            if flash:
-                color = lerp(color, p["text"], flash * 0.6)
-            cell[0], cell[1] = chr(0x2800 + bits), color
-        for col, row, age, li in splashes:
-            if not (gy <= row < H):
-                continue
-            strength = (1 - age) ** 1.5 * (0.4 if li == 0 else 0.85)
-            glow = beam_map[row][col] if 0 <= col < W else 0.0
-            ring = lerp(p["surface2"], beam_col, min(1.0, glow * 1.5))
-            r = int(age * (1.5 if li == 0 else 3.0))
-            marks = [(col, "·")] if r == 0 else [(col - r, "("), (col + r, ")")]
-            for x, ch in marks:
-                if 0 <= x < W:
-                    cell = grid[row][x]
-                    cell[0], cell[1] = ch, lerp(cell[3], ring, strength)
-            if li and age < 0.25 and row - 1 >= gy:      # a droplet jumps up
-                for x in (col - 1, col + 1):
-                    if 0 <= x < W:
-                        cell = grid[row - 1][x]
-                        cell[0], cell[1] = "'", lerp(cell[3], ring, (1 - age * 4) * 0.8)
-
-        # lightning bolt, far away
-        if flash > 0.3 and strike_age < 0.28 and _hash(strike, 79) > 0.35:
-            xd = _hash(strike, 80) * W * 2
-            bolt_end = int(gy * 4 * (0.45 + 0.3 * _hash(strike, 81)))
-            for j in range(0, bolt_end, 2):
-                xd += (_hash(strike, j, 82) - 0.5) * 4.2
-                col, row = int(xd) // 2, j // 4
-                if 0 <= col < W and 0 <= row < gy:
-                    cell = grid[row][col]
-                    bits = (ord(cell[0]) - 0x2800) if "⠀" <= cell[0] <= "⣿" else 0
-                    cell[0] = chr(0x2800 + (bits | _BIT_AT[(int(xd) % 2, j % 4)] | _BIT_AT[(int(xd) % 2, (j + 1) % 4)]))
-                    cell[1] = lerp(p["lavender"], p["text"], flash)
-                    cell[2] = True
-
-        # the logo, lit by the beam and the lightning, and its reflection
-        glow = 0.5 + 0.5 * math.sin(2 * math.pi * t / 4.8)
-        base_col = lerp(self.logo, self.glow, glow * 0.45)
-        for (row, col), bits in cells.items():
-            if row >= gy:
-                continue
-            cell = grid[row][col]
-            color = base_col
-            b = beam_map[row][col]
-            if b > 0:
-                color = lerp(color, add(color, beam_col, 0.25), min(1.0, b * 1.4))
-            if flash:
-                color = lerp(color, p["text"], flash * 0.55)
-            cell[0] = chr(0x2800 + bits)
-            cell[1] = lerp(cell[3], color, fade)
-            # mirrored about the water line, shifted by the ripples, broken up by the rain
-            rr = gy + (gy - 1 - row)
-            if rr >= H:
-                continue
-            depth = rr - gy
-            shift = int(round(math.sin(rr * 1.3 + t * 2.4) * (0.4 + 0.3 * depth)))
-            rc = col + shift
-            if not (0 <= rc < W) or _hash(rr, rc, int(t * 8)) < 0.1 + 0.07 * depth:
-                continue
-            rcell = grid[rr][rc]
-            strength = max(0.18, 0.72 - 0.07 * depth) * fade
-            rcol = lerp(color, beam_col, beam_map[rr][rc] * 0.5)
-            rcell[0], rcell[1] = chr(0x2800 + _FLIP[bits]), lerp(rcell[3], rcol, strength)
-        return [[(c[0], c[1], c[2], c[3]) for c in row] for row in grid]
 
 
 AlterEraScene = LogoScene  # the earlier name

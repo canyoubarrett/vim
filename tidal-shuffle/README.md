@@ -82,19 +82,17 @@ simply follows your choice.
   `~/.config/tidal-shuffle/cache/art`; `ui.artwork: false` turns it off),
   the song playing with a ▶ PLAYING / ⏸ PAUSED badge, a progress bar, the
   next pick, and the flow with its target energy as a meter;
-* behind everything, an animated sky: aurora curtains (cool colours for calm
-  music, warm for energetic, following the flow's target energy), twinkling
-  stars, the odd shooting star and slow bokeh drifting up. The panels are
-  glass: the sky glows faintly through them, and their borders catch its
-  light and a travelling sheen (`ui.backdrop: false` turns the sky off,
-  `ui.glass` sets how much shows through, 0 to 0.6);
-* on the left, the Alter Era logo, floating over water on a rainy night: it
-  bobs, drifts and tilts and its colour breathes; rain falls in two depths
-  (drawn in braille dots, so it moves smoothly), a beam of light slants down
-  from above onto the water with dust turning in it and the rain sparkling
-  where it crosses, the logo is reflected in the water, rippled and broken
-  up by the rain, rings spread where drops land, and now and then lightning
-  lights everything up twice (`ui.weather: false` for the logo alone). It is traced from the
+* behind everything, rain: two depths of drops, the far ones dim and slow,
+  the near ones brighter and faster, slanting a little in the wind, drawn in
+  braille dots so they fall smoothly. It is a drizzle for calm songs and
+  heavier for energetic ones (following the flow's target energy), and it
+  falls in slow motion while paused. The panels are glass: the rain shows
+  through their open space, faintly, but never between words
+  (`ui.backdrop: false` turns the rain off, `ui.glass` sets how much shows
+  through, 0 to 0.6);
+* on the left, the Alter Era logo, as big as the panel allows, floating: it
+  bobs, drifts and tilts, its colour breathes, and its shadow shrinks as it
+  rises. It is traced from the
   vector original (`assets/alter-era.svg`) into braille at whatever size the
   panel allows, so it stays crisp; if it looks too wide or narrow in your
   font, adjust `ui.cell_aspect` (a cell's width / height, 0.5 by default);
@@ -124,8 +122,7 @@ they fade in where the old ones were; if it has none, the lyrics panel fades
 away and the logo glides over to fill the space, and glides back when lyrics
 return. Covers dissolve into each other and the preset menu fades in and out.
 All of this is drawn cell by cell in true colour; if your terminal struggles
-to keep up (Terminal.app can), lower `ui.fps` or turn off `ui.weather` or
-`ui.backdrop`.
+to keep up (Terminal.app can), lower `ui.fps` or turn off `ui.backdrop`.
 
 **Presets menu.** Press `p` (or click the `p presets` chip) to open the
 preset menu over the logo and lyrics. Presets are grouped (energy & sound,

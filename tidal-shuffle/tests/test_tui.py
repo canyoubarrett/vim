@@ -78,7 +78,7 @@ def test_logo_art_and_dots():
 
 
 def test_logo_scene_fits_any_size_has_no_rain_and_drifts_slower_when_paused():
-    scene = LogoScene(weather=False)
+    scene = LogoScene()
     for w, h in ((20, 6), (50, 24), (160, 50)):
         g = scene.frame(w, h, 1.0)
         assert len(g) == h and all(len(r) == w for r in g)
@@ -157,8 +157,8 @@ def test_vector_logo_from_the_svg():
         dots = sum(1 for row in g for c in row if "⠀" < c[0] <= "⣿")
         assert len(g) == h and all(len(r) == w for r in g) and dots > 20
     # bigger panel, bigger logo
-    small = sum(1 for row in LogoScene(weather=False).frame(40, 20, 3.0) for c in row if "⠀" < c[0] <= "⣿")
-    big = sum(1 for row in LogoScene(weather=False).frame(120, 50, 3.0) for c in row if "⠀" < c[0] <= "⣿")
+    small = sum(1 for row in LogoScene().frame(40, 20, 3.0) for c in row if "⠀" < c[0] <= "⣿")
+    big = sum(1 for row in LogoScene().frame(120, 50, 3.0) for c in row if "⠀" < c[0] <= "⣿")
     assert big > small * 2
 
 
@@ -466,39 +466,48 @@ def test_compositor_glass_opacity_and_output():
     assert "".join(s.text for s in out).splitlines()[0].startswith("abc")
 
 
-def test_backdrop_sky():
+def test_rain_behind_the_panels():
     from tidal_shuffle.fx import Backdrop
 
-    sky = Backdrop(MOCHA.p)
-    rows = sky.frame(80, 30, 1.0, energy=0.2)
+    rain = Backdrop(MOCHA.p)
+    rows = rain.frame(80, 30, 1.0, energy=0.5)
     assert len(rows) == 30 and all(len(r) == 80 for r in rows)
-    assert len({tuple(c[3]) for r in rows for c in r}) > 50             # a gradient, with aurora
-    assert any(c[0] != " " for r in rows for c in r)                    # stars and bokeh
-    assert sky.colors(0.2) != sky.colors(0.9)                           # calm is cool, energetic warm
-    t = sky._t
-    sky.frame(80, 30, 2.0, playing=False)
-    assert 0 < sky._t - t < 0.5                                         # paused: slow motion
+    drops = [c for r in rows for c in r if "⠀" < c[0] <= "⣿"]
+    assert len(drops) > 80 and all(c[0] in "⠀⣿" or "⠀" < c[0] <= "⣿" or c[0] == " " for r in rows for c in r)
+    assert rows[0][0][3] != rows[-1][0][3]                               # night-sky gradient
+    calm = Backdrop(MOCHA.p).frame(80, 30, 1.0, energy=0.0)
+    wild = Backdrop(MOCHA.p).frame(80, 30, 1.0, energy=1.0)
+    count = lambda g: sum(1 for r in g for c in r if c[0] != " ")
+    assert count(wild) > count(calm) * 1.3                              # heavier rain for energetic music
+    # it falls: a drop's dots move down between frames, and slowly while paused
+    t = rain._t
+    rain.frame(80, 30, 1.1)
+    assert abs(rain._t - t - 0.1) < 1e-9
+    rain.frame(80, 30, 1.2, playing=False)
+    assert abs(rain._t - t - 0.125) < 1e-9
 
 
-def test_rainy_scene_with_beam_reflection_and_lightning():
+def test_rain_shows_faintly_through_glass():
+    from rich.segment import Segment
+
+    from tidal_shuffle.fx import Canvas
+    from tidal_shuffle.tui import style as mkstyle
+
+    cells = [[["⡇", (200, 200, 200), False, (17, 17, 27)] for _ in range(8)]]
+    canvas = Canvas(cells, MOCHA.bg, MOCHA.text, glass=0.22)
+    canvas.blit([[Segment("   a b  ", mkstyle(MOCHA.text, False, MOCHA.bg))]], 0, 0, 8, 1)
+    assert cells[0][0][0] == "⡇" and sum(cells[0][0][1]) < sum((200, 200, 200)) / 2   # faint
+    assert "".join(c[0] for c in cells[0][2:7]) == " a b "                          # never between words
+    solid = [[["⡇", (200, 200, 200), False, (17, 17, 27)]]]
+    Canvas(solid, MOCHA.bg, MOCHA.text).blit([[Segment(" ", mkstyle(None, False, (5, 5, 5)))]], 0, 0, 1, 1)
+    assert solid[0][0][0] == " "                                         # solid panels hide it
+
+
+def test_logo_is_as_big_as_the_panel_allows():
     scene = LogoScene()
-    for i in range(30):
-        g = scene.frame(80, 30, 3.0 + i * 0.08)
-    assert len(g) == 30 and all(len(r) == 80 and len(c) == 4 for r in g for c in r)
-    gy = int(30 * 0.72)
-    logo = MOCHA.logo
-    above = [c for r in g[:gy] for c in r if "⠀" < c[0] <= "⣿"]
-    below = [c for r in g[gy + 1:] for c in r if "⠀" < c[0] <= "⣿"]
-    assert len(above) > 100 and below                                    # rain and logo; reflection or rain below
-    assert any(c[0] in "()·" for r in g[gy:] for c in r)                 # rings where drops land
-    bgs = [c[3] for c in g[gy // 2]]
-    assert max(sum(b) for b in bgs) - min(sum(b) for b in bgs) > 20      # the beam lights a band of sky
-    flashes = [scene.lightning(t / 20)[0] for t in range(0, 20 * 120)]
-    assert max(flashes) > 0.6 and flashes.count(0.0) > len(flashes) * 0.8   # rare, bright
-    assert any(c[2] is False for r in g for c in r) and logo
-
-
-def test_scene_reflection_mirrors_the_logo():
-    from tidal_shuffle.visualizer import _FLIP
-
-    assert _FLIP[0x01] == 0x40 and _FLIP[0x08] == 0x80 and _FLIP[_FLIP[0x5A]] == 0x5A
+    for w, h in ((46, 22), (116, 30)):
+        rows = set()
+        for i in range(60):
+            g = scene.frame(w, h, i * 0.2)
+            rows |= {y for y, r in enumerate(g) if any("⠀" < c[0] <= "⣿" for c in r)}
+        assert min(rows) >= 0 and max(rows) <= h - 2 and max(rows) - min(rows) >= h - 4

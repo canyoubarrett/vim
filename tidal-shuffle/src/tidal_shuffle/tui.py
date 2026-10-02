@@ -388,7 +388,6 @@ class ShuffleTUI:
         self.th = theme or make_theme(getattr(getattr(config, "ui", None), "theme", "mocha"))
         if scene is not None:
             scene.logo, scene.glow, scene.shadow, scene.bg = self.th.logo, self.th.logo_glow, self.th.shadow, self.th.bg
-            scene.p = dict(scene.p, **self.th.p)
         self.scene = scene
         ui = getattr(config, "ui", None)
         self.backdrop = Backdrop(self.th.p, light=self.th.name == "latte") if getattr(ui, "backdrop", True) else None
@@ -942,7 +941,7 @@ class ShuffleTUI:
             foot_y = my + HEADER_H
             out.append((self.footer(max(3, height - foot_y - 1)), mx, foot_y, inner, max(3, height - foot_y - 1), 1.0))
         else:
-            foot = 8 if height >= 34 else 6
+            foot = 6 if height >= 34 else 5
             foot_y = height - 1 - foot
             body_y = my + HEADER_H + gap
             body_h = max(3, foot_y - gap - body_y)
@@ -968,8 +967,6 @@ class ShuffleTUI:
                     continue
                 lines = console.render_lines(renderable, options.update(width=w, height=h), pad=True)
                 canvas.blit(lines, x, y, w, h, opacity)
-            if self.backdrop is not None:
-                canvas.sheen(self.backdrop._t, th.border, th.p["lavender"])
             yield from segments(canvas.cells, style)
         except Exception as e:  # never let a render error take the screen down
             yield from console.render(Text(f"display error: {e}", style(th.text)), options)
