@@ -167,6 +167,8 @@ class Engine:
 
         wanted = max(1, self.config.shuffle.lookahead)
         tried = 0
+        seen_ids: set[str] = set()
+        allow_repeats = note == "allowing repeats"
         for cand in ordered:
             if len(plan.picks) >= wanted:
                 break
@@ -176,13 +178,16 @@ class Engine:
             except Exception as e:
                 self.log(f"TIDAL match failed for {cand.label()}: {e}")
                 track = None
-            if track is None:
-                continue
+            if track is None or track.id in seen_ids:
+                continue  # unknown on TIDAL, or the same TIDAL track as an earlier pick
+            if not allow_repeats and (track.id in ctx.recent_tidal_ids or track.key in ctx.recent_keys):
+                continue  # heard recently under a slightly different title ("... (Remastered)")
             if not self.config.shuffle.allow_explicit and track.explicit:
                 continue
             if track.duration is not None and not (self.config.shuffle.min_duration <= track.duration <= self.config.shuffle.max_duration):
                 continue
             cand.tidal_id = track.id
+            seen_ids.add(track.id)
             plan.picks.append(Pick(candidate=cand, track=track,
                                    reason=f"{cand.source} #{cand.rank + 1}, score {cand.score:.2f}"))
             if tried > wanted * 8:

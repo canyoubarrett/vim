@@ -136,3 +136,30 @@ def test_exclude_keys_skips_a_failed_pick(tmp_path):
     eng = make_engine(tmp_path, [src], {"shuffle": {"strategy": "top", "lookahead": 1}})
     plan = eng.plan(Seed("Seed", "Someone"), exclude_keys={("a", "a1")})
     assert plan.primary.track.title == "B"
+
+
+
+def test_song_heard_under_a_versioned_title_is_not_picked_again(tmp_path):
+    class Cat(FakeCatalog):
+        def match(self, cand):
+            if cand.title == "Come Together":
+                return TidalTrack(id="T1", title="Come Together (Remastered 2009)", artist="The Beatles", duration=259)
+            return super().match(cand)
+    src = StaticSource([cand("Come Together", "The Beatles", 0.9), cand("Something Else", "Other", 0.5)], name="lastfm")
+    eng = make_engine(tmp_path, [src], {"shuffle": {"strategy": "top", "lookahead": 2}}, Cat())
+    eng.history.add("Come Together (Remastered 2009)", "The Beatles", tidal_id="T1")
+    plan = eng.plan(Seed("Seed", "Someone"))
+    assert [p.track.id for p in plan.picks] == ["t-Something Else"]
+
+
+def test_two_candidates_for_one_tidal_track_make_one_pick(tmp_path):
+    class Cat(FakeCatalog):
+        def match(self, cand):
+            if cand.title.startswith("Come Together"):
+                return TidalTrack(id="T9", title="Come Together", artist="The Beatles", duration=259)
+            return super().match(cand)
+    src = StaticSource([cand("Come Together", "The Beatles", 0.9), cand("Come Together - Remastered 2009", "The Beatles", 0.8),
+                        cand("Third", "C1", 0.5)], name="lastfm")
+    eng = make_engine(tmp_path, [src], {"shuffle": {"strategy": "top", "lookahead": 3}}, Cat())
+    plan = eng.plan(Seed("Seed", "Someone"))
+    assert [p.track.id for p in plan.picks] == ["T9", "t-Third"]
