@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -33,6 +34,8 @@ class LoopState:
     recent_seeds: list[Seed] = field(default_factory=list)
     failed_keys: set = field(default_factory=set)
     pending: Optional[NowPlaying] = None   # candidate new track awaiting confirmation
+    recorded: bool = False                 # was `expected` already written to history?
+    orphaned: dict = field(default_factory=dict)  # tidal id -> pick still sitting in TIDAL's queue
     planning: Optional[Future] = None      # background plan in flight
     generation: int = 0                    # bumps on every track change; stale plans are dropped
     picks_played: int = 0
@@ -66,8 +69,8 @@ class ShuffleLoop:
         self._sleep = sleep
         self.state = LoopState()
         self._announced_idle = False
-        self._executor: Optional[ThreadPoolExecutor] = (
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tidal-shuffle-planner") if background else None)
+        self.background = background
+        self._closed = False
 
     # -- helpers --------------------------------------------------------------
     def remaining(self, np: Optional[NowPlaying], now: float) -> Optional[float]:
@@ -100,19 +103,27 @@ class ShuffleLoop:
     def _record(self, pick: Pick) -> None:
         self.history.add(pick.track.title, pick.track.artist, tidal_id=pick.track.id, source=pick.source)
         self.state.picks_played += 1
+        self.state.recorded = True
 
     # -- state transitions ----------------------------------------------------
     def on_new_track(self, np: NowPlaying, now: float) -> None:
         st = self.state
         pos = np.position_at(self._wall()) or 0.0
         was_ours = st.expected is not None and self._matches_expected(np)
+        orphan = st.orphaned.pop(np.tidal_id, None) if (np.tidal_id and not was_ours) else None
         if st.current is not None:
             st.recent_seeds.append(Seed.from_now_playing(st.current))
             st.recent_seeds = st.recent_seeds[-10:]
+        if st.queued is not None and not was_ours and st.queued.track.id:
+            # You skipped elsewhere; our pick may still be waiting in TIDAL's queue.
+            st.orphaned[st.queued.track.id] = st.queued
         if was_ours:
             self.log(f"✓ now playing our pick: {np.label()}  [{st.expected.source}]")
-            if st.queued is not None and st.queued is st.expected:
-                self._record(st.expected)  # queued picks are recorded once they actually play
+            if not st.recorded:
+                self._record(st.expected)  # queued and opened-by-link picks count once they play
+        elif orphan is not None:
+            self.log(f"✓ now playing an earlier pick from TIDAL's queue: {np.label()}  [{orphan.source}]")
+            self._record(orphan)
         else:
             if st.expected is not None and (st.handed_off or st.queued is not None):
                 self.log(f"hand-off missed; TIDAL moved on to {np.label()} instead of {st.expected.label()}")
@@ -135,6 +146,7 @@ class ShuffleLoop:
         st.queued = None
         st.handed_off = False
         st.expected = None
+        st.recorded = False
         st.failed_keys = set()
         st.pending = None
 
@@ -150,7 +162,7 @@ class ShuffleLoop:
         st = self.state
         return (Seed.from_now_playing(st.current), st.anchor, list(st.recent_seeds), set(st.failed_keys) or None)
 
-    def _apply_plan(self, plan: Plan, dry_run: bool) -> Plan:
+    def _apply_plan(self, plan: Plan, dry_run: bool, allow_queue: bool = True) -> Plan:
         st = self.state
         st.plan = plan
         if plan.seed.duration and st.current is not None and st.current.duration is None:
@@ -161,30 +173,39 @@ class ShuffleLoop:
                      + (f"  backups: {backups}" if backups else ""))
             for note in plan.notes:
                 self.log(f"  note: {note}")
-            if not dry_run and self.player.supports_queue():
+            if not dry_run and allow_queue and self.player.supports_queue():
                 self.queue_pick(plan.primary)
         else:
             self.log("⚠ could not find anything to play next: " + "; ".join(plan.notes or ["no reason given"]))
         return plan
 
-    def plan_now(self, dry_run: bool = False) -> Optional[Plan]:
+    def plan_now(self, dry_run: bool = False, allow_queue: bool = True) -> Optional[Plan]:
         """Plan synchronously for the current song."""
         st = self.state
         if st.current is None:
             return None
-        return self._apply_plan(self._compute_plan(*self._plan_inputs()), dry_run)
+        return self._apply_plan(self._compute_plan(*self._plan_inputs()), dry_run, allow_queue)
 
     def request_plan(self, dry_run: bool = False) -> None:
         """Plan for the current song, on the worker thread when there is one."""
         st = self.state
         if st.current is None or st.planning is not None:
             return
-        if self._executor is None:
+        if not self.background or self._closed:
             self.plan_now(dry_run=dry_run)
             return
-        generation = st.generation
-        future = self._executor.submit(self._compute_plan, *self._plan_inputs())
-        future.generation = generation  # type: ignore[attr-defined]
+        future: Future = Future()
+        future.generation = st.generation  # type: ignore[attr-defined]
+        inputs = self._plan_inputs()
+
+        def work() -> None:
+            # A daemon thread, so Ctrl+C never waits for a slow harvest to finish.
+            try:
+                future.set_result(self._compute_plan(*inputs))
+            except BaseException as e:  # pragma: no cover - _compute_plan catches Exception
+                future.set_exception(e)
+
+        threading.Thread(target=work, name="tidal-shuffle-planner", daemon=True).start()
         st.planning = future
 
     def collect_plan(self, dry_run: bool = False) -> None:
@@ -204,8 +225,7 @@ class ShuffleLoop:
         self._apply_plan(plan, dry_run)
 
     def close(self) -> None:
-        if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+        self._closed = True
 
     def queue_pick(self, pick: Pick) -> bool:
         """Hand the pick to TIDAL's own queue (gapless; needs TidaLuna)."""
@@ -324,7 +344,10 @@ class ShuffleLoop:
                     st.prepared_id = st.plan.primary.track.id
                     if self.player.prepare(st.plan.primary.track):
                         self.log(f"  prepared {st.plan.primary.track.label()} ({rem:.0f}s left)")
-                if not st.handed_off and rem <= cfg.handoff_seconds:
+                    # Preparing takes time; re-read the clock before deciding on the hand-off.
+                    now = self._clock()
+                    rem = self.remaining(None, now)
+                if not st.handed_off and rem is not None and rem <= cfg.handoff_seconds:
                     self.handoff(now)
             elif st.current.duration is None and not st.handed_off and (now - st.started_at) > 20 * 60:
                 self.log("no timing information for 20 minutes; skipping ahead")
@@ -361,11 +384,16 @@ class ShuffleLoop:
 
     def skip_now(self) -> bool:
         """Plan (if needed) and start the next pick immediately."""
-        if self.state.current is None:
-            self.step()
-        if self.state.current is None:
+        st = self.state
+        if st.current is None:
+            self._observe(self.nowplaying.read(), self._clock())
+        if st.current is None:
             return False
-        if self.state.plan is None or not self.state.plan.picks:
-            self.plan_now()
-        self.state.queued = None
+        if st.queued is not None and self.player.press("next"):
+            # The pick is already next in TIDAL's queue: just move on to it.
+            self.log(f"⏭ skipping to {st.queued.track.label()}")
+            return True
+        if st.plan is None or not st.plan.picks:
+            self.plan_now(allow_queue=False)
+        st.queued = None
         return self.handoff(self._clock())

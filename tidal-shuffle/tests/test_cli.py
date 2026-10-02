@@ -53,3 +53,29 @@ def test_doctor_runs_without_config(isolated_home, monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
     r = invoke("doctor")
     assert r.exit_code == 0 and "TIDAL login" in r.output and "no session yet" in r.output
+
+
+def test_log_lines_render_markup_and_keep_brackets(capsys):
+    from tidal_shuffle import cli as cli_mod
+    from rich.console import Console
+    import io
+    buf = io.StringIO()
+    old = cli_mod.console
+    cli_mod.console = Console(file=buf, width=200, color_system=None)
+    try:
+        cli_mod.say("♫ now playing: Dreams [live] [/intro] — Band")
+    finally:
+        cli_mod.console = old
+    out = buf.getvalue()
+    assert "[dim]" not in out and "Dreams [live] [/intro] — Band" in out
+
+
+def test_presets_with_bad_yaml_is_a_clean_error(isolated_home):
+    (isolated_home / "config.yaml").write_text("shuffle: [unclosed")
+    r = invoke("presets", "--config", str(isolated_home / "config.yaml"))
+    assert r.exit_code != 0 and "invalid YAML" in r.output and "Traceback" not in r.output
+
+
+def test_missing_config_flag_is_reported(isolated_home):
+    r = invoke("config", "show", "--config", str(isolated_home / "nope.yaml"))
+    assert r.exit_code != 0 and "not found" in r.output

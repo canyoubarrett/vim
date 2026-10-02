@@ -52,11 +52,22 @@ spotify:
     enabled: true
     harvest: 25             # upcoming songs to read from Spotify per seed
     seed_method: auto       # auto | station | autoplay
-    mute: true
-    restore: true
+    mute: true              # Spotify is muted while it is harvesting
+    restore: true           # and its volume is put back afterwards
     hide_window: true
-    quit_after: false
-    skip_delay: 0.7
+    quit_after: auto        # quit Spotify after a harvest if Tidal Shuffle opened it
+                            # (an open Spotify would capture your media keys)
+    max_seconds: 60         # give up on a harvest after this long
+    app_path: ""            # set if Spotify.app is not in /Applications
+    # How the song TIDAL is playing is found on Spotify, tried in order:
+    #   spotify-api  - Web API search (needs the credentials below + Premium)
+    #   listenbrainz - ListenBrainz's free Spotify-id index
+    #   spotify-ui   - Spotify's own search page, driven through Accessibility
+    #   odesli       - song.link, only with an API key
+    id_lookups: [spotify-api, listenbrainz, spotify-ui, odesli]
+    odesli_api_key: ""
+    ui_label_prefix: "Play "  # Spotify labels track buttons "Play <song> by <artist>";
+    ui_label_by: " by "       # change these two if Spotify is not in English
 
 lastfm:
   api_key: ""               # free key: https://www.last.fm/api/account/create

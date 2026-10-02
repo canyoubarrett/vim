@@ -93,7 +93,7 @@ HARVEST_SCRIPT = """
 -- Time is counted in 0.1 s ticks rather than with `current date`, which only
 -- has one-second resolution and is a scripting addition (best kept outside
 -- `tell` blocks).
-on harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDelay, origVol, muteIt, restoreIt, useStation)
+on harvest(seedURI, stationURI, wanted, stepTicks, firstTicks, adTicks, budgetTicks, skipDelay, origVol, muteIt, restoreIt, hideIt, useStation)
     set US to ASCII character 31
     set outLines to {}
     set ticks to 0
@@ -112,6 +112,12 @@ on harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDel
             end if
         end timeout
     end tell
+    if hideIt then
+        -- `play track` brings Spotify to the front on recent versions; put it back.
+        try
+            tell application "System Events" to set visible of process "Spotify" to false
+        end try
+    end if
     delay 1.0
     tell application id "%(bid)s"
         set prevId to seedURI
@@ -131,6 +137,10 @@ on harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDel
             next track
             set waited to 0
             set curId to prevId
+            -- A freshly started station can take several seconds to load, so the
+            -- first skip gets a longer window and is repeated while we wait.
+            set limitTicks to stepTicks
+            if (count of outLines) = 0 then set limitTicks to firstTicks
             repeat
                 delay 0.1
                 set waited to waited + 1
@@ -138,7 +148,8 @@ on harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDel
                     set curId to id of current track
                 end try
                 if curId is not prevId then exit repeat
-                if waited >= stepTicks then exit repeat
+                if waited >= limitTicks then exit repeat
+                if (count of outLines) = 0 and (waited mod stepTicks) = 0 then next track
             end repeat
             set ticks to ticks + waited
             if curId is prevId then
@@ -182,7 +193,7 @@ on harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDel
     return seedLine & linefeed & (outLines as text)
 end harvest
 
-return harvest(%(seed)s, %(station)s, %(wanted)d, %(step_ticks)d, %(ad_ticks)d, %(budget_ticks)d, %(skip_delay)s, %(orig_volume)d, %(mute)s, %(restore)s, %(use_station)s)
+return harvest(%(seed)s, %(station)s, %(wanted)d, %(step_ticks)d, %(first_ticks)d, %(ad_ticks)d, %(budget_ticks)d, %(skip_delay)s, %(orig_volume)d, %(mute)s, %(restore)s, %(hide)s, %(use_station)s)
 """
 
 RESTORE_SCRIPT = GUARD + """
@@ -237,6 +248,9 @@ class SpotifyAppSource:
         self._bad_ids: set[str] = set()
         self.last_lookup: str = ""
         self._ui_touched = False
+        self._launched_by_us = False
+        self._busy_volume: Optional[int] = None
+        self._station_failures = 0
 
     # -- availability ---------------------------------------------------------
     def installed(self) -> bool:
@@ -298,6 +312,8 @@ class SpotifyAppSource:
                 self._osa(READY_SCRIPT, timeout=4.0)
                 break
             except SpotifyAppError:
+                if self._dead:  # Automation access was refused; waiting will not help
+                    raise
                 self._sleep(0.5)
         else:
             raise SpotifyAppError("Spotify did not start in time")
@@ -331,8 +347,19 @@ class SpotifyAppSource:
         if not st.get("running"):
             self.log("launching Spotify (hidden) for the harvest")
             self._launch_hidden()
+            self._launched_by_us = True
             st = self.state()
         return st
+
+    def _should_quit(self) -> bool:
+        q = self.cfg.quit_after
+        return q is True or (q == "auto" and self._launched_by_us)
+
+    def abort(self) -> None:
+        """Called on Ctrl+C: pause Spotify and restore its volume if a harvest is running."""
+        if self._busy_volume is not None or self._ui_touched:
+            self._restore(self._busy_volume)
+            self._busy_volume = None
 
     # -- finding the seed on Spotify -------------------------------------------
     def _lookup_order(self) -> list[str]:
@@ -410,11 +437,12 @@ class SpotifyAppSource:
         station = "spotify:station:track:" + seed_uri.rsplit(":", 1)[-1]
         return HARVEST_SCRIPT % {
             "bid": SPOTIFY_BUNDLE, "seed": quote(seed_uri), "station": quote(station), "wanted": int(wanted),
-            "step_ticks": 20, "ad_ticks": 450, "budget_ticks": int(self.cfg.max_seconds * 10),
+            "step_ticks": 20, "first_ticks": 100, "ad_ticks": 450, "budget_ticks": int(self.cfg.max_seconds * 10),
             "skip_delay": f"{float(self.cfg.skip_delay):.2f}",
             "orig_volume": int(orig_volume) if orig_volume is not None else -1,
             "mute": "true" if self.cfg.mute else "false",
             "restore": "true" if self.cfg.restore else "false",
+            "hide": "true" if self.cfg.hide_window else "false",
             "use_station": "true" if use_station else "false",
         }
 
@@ -453,7 +481,7 @@ class SpotifyAppSource:
         if seed_uri in self._cache:
             return list(self._cache[seed_uri]), None
         methods = ["station", "autoplay"] if self.cfg.seed_method == "auto" else [self.cfg.seed_method]
-        if self._station_works is False and "autoplay" in methods:
+        if self._station_works is False and self._station_failures >= 2 and "autoplay" in methods:
             methods = ["autoplay"]
         collected: list[Candidate] = []
         seed_meta: Optional[dict] = None
@@ -473,8 +501,10 @@ class SpotifyAppSource:
                     collected = cands
                     if method == "station":
                         self._station_works = True
+                        self._station_failures = 0
                     break
                 if method == "station" and error == "no-advance":
+                    self._station_failures += 1
                     self._station_works = False
                     self.log("song radio did not start; falling back to autoplay")
         finally:
@@ -483,7 +513,8 @@ class SpotifyAppSource:
                 # pause Spotify and restore its volume itself.
                 self._restore(orig_volume)
         self.log(f"Spotify harvest: {len(collected)} songs in {self._clock() - started:.1f}s")
-        self._cache[seed_uri] = list(collected)
+        if collected:  # an ad or a slow station is no reason to give up on this song for good
+            self._cache[seed_uri] = list(collected)
         return collected, seed_meta
 
     def _seed_matches(self, seed: Seed, meta: Optional[dict]) -> bool:
@@ -507,6 +538,7 @@ class SpotifyAppSource:
                 self.log("Spotify is playing something; not interrupting it")
                 return []
             orig_volume = st.get("volume")
+            self._busy_volume = orig_volume
             self._ui_touched = False
             harvested = False
             try:
@@ -523,9 +555,14 @@ class SpotifyAppSource:
             finally:
                 if self._ui_touched and not harvested:
                     self._restore(orig_volume)  # the UI search started a song, muted
+                self._busy_volume = None
+                self._ui_touched = False
                 self._hide()
-                if self.cfg.quit_after:
+                if self._should_quit():
+                    # Spotify stays macOS's "now playing" app while it is open, which would
+                    # send your media keys to it instead of TIDAL.
                     self._quit()
+                    self._launched_by_us = False
         if not self._seed_matches(seed, meta):
             self.log(f"Spotify played {meta.get('name')} — {meta.get('artist')} for {seed.label()}; ignoring that radio")
             self._bad_ids.add(sid)

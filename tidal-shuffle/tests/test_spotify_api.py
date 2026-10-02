@@ -144,3 +144,21 @@ def test_token_is_cached_and_refreshed_on_401():
     assert len(token_calls) == 1
     src.candidates([Seed("Seed Song", "Seed Artist")], 5)  # cached results, no new token
     assert len([r for r in server.requests if "api/token" in str(r.url)]) == 1
+
+
+def test_short_rate_limit_pauses_the_api_temporarily():
+    t = {"now": 1000.0}
+    class Limited(Server):
+        limited = True
+        def __call__(self, request):
+            if "api/token" not in str(request.url) and self.limited:
+                return httpx.Response(429, headers={"Retry-After": "60"})
+            return super().__call__(request)
+    server = Limited()
+    src = SpotifyApiSource("id", "secret", client=httpx.Client(transport=httpx.MockTransport(server)),
+                           sleep=lambda s: None, now=lambda: t["now"])
+    assert src.candidates([Seed("Seed Song", "Seed Artist")], 5) == []
+    assert src.available()[0] is False
+    t["now"] += 61
+    server.limited = False
+    assert src.available() == (True, "")

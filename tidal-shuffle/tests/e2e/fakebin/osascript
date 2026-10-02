@@ -23,7 +23,7 @@ if 'tell application "TIDAL" to quit' in script:
     log("osascript", "quit TIDAL")
     tidal("/__quit")
     sys.exit(0)
-if "System Events" in script and "set visible" in script:
+if "System Events" in script and "set visible" in script and "on harvest(" not in script:
     log("osascript", "hide Spotify")
     sys.exit(0)
 
@@ -33,9 +33,10 @@ if "on harvest(" in script:
     rest = re.sub(r'"[^"]*"', "", call).strip(" ,)\n").split(",")
     nums = [x.strip() for x in rest if x.strip()]
     seed, station = strings[0], strings[1]
-    # harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDelay, origVol, muteIt, restoreIt, useStation)
-    wanted, orig_volume = int(nums[0]), int(nums[5])
-    mute, restore, use_station = nums[6] == "true", nums[7] == "true", nums[8].rstrip(")") == "true"
+    names = ["wanted", "step", "first", "ad", "budget", "skip", "orig", "mute", "restore", "hide", "use"]
+    a = dict(zip(names, (n.rstrip(")") for n in nums)))
+    wanted, orig_volume = int(a["wanted"]), int(a["orig"])
+    mute, restore, use_station = a["mute"] == "true", a["restore"] == "true", a["use"] == "true"
     log("osascript", f"harvest seed={seed} wanted={wanted} station={use_station}")
     if not sp.get("running"):
         fail("Spotify got an error: Application isn't running.", -600)

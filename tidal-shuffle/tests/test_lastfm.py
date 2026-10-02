@@ -101,3 +101,52 @@ def test_duration_units():
     assert LastfmSource._duration({"duration": "245000"}) == 245.0
     assert LastfmSource._duration({"duration": "0"}) is None
     assert LastfmSource._duration({}) is None
+
+
+def test_not_found_with_http_400_falls_back_instead_of_failing():
+    def handler(request):
+        m = request.url.params["method"]
+        if m == "track.getSimilar":
+            return httpx.Response(400, json={"error": 6, "message": "Track not found"})
+        if m == "artist.getSimilar":
+            return httpx.Response(200, json={"similarartists": {"artist": [{"name": "Kin", "match": "0.8"}]}})
+        if m == "artist.getTopTracks":
+            return httpx.Response(200, json={"toptracks": {"track": [{"name": "Hit", "artist": {"name": "Kin"}}]}})
+        raise AssertionError(m)
+    cands = make_source(handler).candidates([Seed("Brand New", "Someone")], 5)
+    assert [c.title for c in cands] and cands[0].artist == "Kin"
+
+
+def test_invalid_key_disables_the_source():
+    src = make_source(lambda r: httpx.Response(403, json={"error": 10, "message": "Invalid API key"}))
+    with pytest.raises(LastfmError):
+        src.similar_tracks("S", "A", 5)
+    ok, reason = src.available()
+    assert not ok and "invalid API key" in reason
+
+
+def test_rate_limit_error_29_backs_off_once():
+    waits, n = [], {"c": 0}
+    def handler(request):
+        n["c"] += 1
+        if n["c"] == 1:
+            return httpx.Response(200, json={"error": 29, "message": "Rate Limit Exceeded"})
+        return httpx.Response(200, json=similar_payload(1))
+    src = LastfmSource("k", client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=waits.append, min_interval=0)
+    assert len(src.similar_tracks("S", "A", 5)) == 1 and 10.0 in waits
+
+
+def test_disk_cache_is_used_across_instances(tmp_path):
+    from tidal_shuffle.cache import DiskCache
+    calls = []
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, json=similar_payload(2))
+    def make_cached():
+        return LastfmSource("k", client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=lambda s: None,
+                            disk_cache=DiskCache(tmp_path / "lf.json", ttl=7 * 86400))
+    a = make_cached()
+    a.similar_tracks("S", "A", 5)
+    a.close()
+    make_cached().similar_tracks("S", "A", 5)
+    assert len(calls) == 1

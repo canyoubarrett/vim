@@ -32,7 +32,7 @@ class FakeSpotify:
         self.scripts.append(script)
         if self.deny:
             raise AppleScriptError("execution error: Not authorized to send Apple events to Spotify. (-1743)")
-        if "System Events" in script:
+        if "System Events" in script and "on harvest(" not in script:
             self.hidden += 1
             return ""
         if "to quit" in script:
@@ -64,7 +64,9 @@ class FakeSpotify:
                 raise AppleScriptError("AppleScript timed out after 120s")
             call = script.rsplit("return harvest(", 1)[1]
             args = [a.strip().strip('"') for a in call.rsplit(")", 1)[0].split(",")]
-            seed, wanted, orig, use_station = args[0], int(args[2]), int(args[7]), args[10] == "true"
+            names = ["seed", "station", "wanted", "step", "first", "ad", "budget", "skip", "orig", "mute", "restore", "hide", "use"]
+            a = dict(zip(names, args))
+            seed, wanted, orig, use_station = a["seed"], int(a["wanted"]), int(a["orig"]), a["use"] == "true"
             tracks = self.station if use_station else self.autoplay
             seed_name = self.seed_name if self.seed_name is not None else "Seed"
             lines = [US.join(["SEED", seed, seed_name, self.seed_artist])]
@@ -133,15 +135,44 @@ def test_same_artist_different_take_is_accepted():
     assert [c.title for c in make(fake).candidates([Seed("Seed", "S")], 5)] == ["Song 1"]
 
 
-def test_falls_back_to_autoplay_when_station_does_not_advance():
+def test_falls_back_to_autoplay_and_only_gives_up_on_song_radio_after_two_songs():
     fake = FakeSpotify(station=[], autoplay=[track(9)])
     src = make(fake)
     assert [c.title for c in src.candidates([Seed("Seed", "S")], 5)] == ["Song 9"]
-    assert src._station_works is False
-    src._cache.clear()
     src.candidates([Seed("Other", "S", spotify_id="y")], 5)
-    harvests = [s for s in fake.scripts if "on harvest(" in s]
-    assert len(harvests) == 3  # station + autoplay, then autoplay only
+    src.candidates([Seed("Third", "S", spotify_id="z")], 5)
+    modes = [s.rsplit(",", 1)[1].strip(" )\n") for s in fake.scripts if "on harvest(" in s]
+    # station+autoplay, station+autoplay, then autoplay only
+    assert modes == ["true", "false", "true", "false", "false"]
+
+
+def test_empty_harvests_are_not_cached():
+    fake = FakeSpotify(station=[], autoplay=[])
+    src = make(fake)
+    assert src.candidates([Seed("Seed", "S")], 5) == []
+    fake.station = [track(1)]
+    assert [c.title for c in src.candidates([Seed("Seed", "S")], 5)] == ["Song 1"]
+
+
+def test_quits_spotify_after_harvest_only_if_it_launched_it():
+    fake = FakeSpotify(running=False, station=[track(1)])
+    def run(cmd, **kw):
+        fake.running = True
+    src = make(fake, run=run)
+    src.candidates([Seed("Seed", "S")], 5)
+    assert fake.quit == 1  # we opened it, so we close it (keeps media keys on TIDAL)
+    fake2 = FakeSpotify(running=True, station=[track(1)])
+    make(fake2).candidates([Seed("Seed", "S")], 5)
+    assert fake2.quit == 0  # you had it open: leave it alone
+
+
+def test_abort_restores_spotify_mid_harvest():
+    fake = FakeSpotify(station=[track(1)], volume=58)
+    src = make(fake)
+    src._busy_volume = 58  # as if a harvest were running on the planner thread
+    fake.volume, fake.state = 0, "playing"
+    src.abort()
+    assert fake.volume == 58 and fake.state == "paused"
 
 
 def test_launches_hidden_when_not_running():
@@ -231,7 +262,7 @@ def test_harvest_script_formatting():
     src = make(FakeSpotify(), cfg=SpotifyAppConfig(max_seconds=30, skip_delay=0.25, mute=False, restore=True))
     script = src._harvest_script("spotify:track:abc", 12, use_station=True, orig_volume=55)
     tail = script.rsplit("return harvest(", 1)[1]
-    assert tail.startswith('"spotify:track:abc", "spotify:station:track:abc", 12, 20, 450, 300, 0.25, 55, false, true, true)')
+    assert tail.startswith('"spotify:track:abc", "spotify:station:track:abc", 12, 20, 100, 450, 300, 0.25, 55, false, true, true, true)')
     body = script.split("on harvest(")[1]
     assert "current date" not in body and "end with timeout" not in script
 
@@ -247,3 +278,8 @@ def test_quit_after_option():
     fake = FakeSpotify(station=[track(1)])
     make(fake, cfg=SpotifyAppConfig(harvest=3, quit_after=True)).candidates([Seed("Seed", "S")], 3)
     assert fake.quit == 1
+    fake = FakeSpotify(running=False, station=[track(1)])
+    def run(cmd, **kw):
+        fake.running = True
+    make(fake, cfg=SpotifyAppConfig(harvest=3, quit_after=False), run=run).candidates([Seed("Seed", "S")], 3)
+    assert fake.quit == 0

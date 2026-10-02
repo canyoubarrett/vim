@@ -35,7 +35,8 @@ def run_doctor(cfg: Optional[AppConfig], console: Console) -> None:
     elif cfg.config_path:
         _row(table, "config", True, str(cfg.config_path))
     else:
-        _row(table, "config", None, f"no file at {CONFIG_FILE}; using defaults", "`tidal-shuffle config init` to create one")
+        from .config import default_config_path
+        _row(table, "config", None, f"no file at {default_config_path()}; using defaults", "`tidal-shuffle config init` to create one")
 
     # TIDAL app + session
     app = Path(cfg.player.tidal_app if cfg else "/Applications/TIDAL.app")
@@ -119,9 +120,11 @@ def run_doctor(cfg: Optional[AppConfig], console: Console) -> None:
                 from .sources.spotify_api import SpotifyApiSource
                 src = SpotifyApiSource(cfg.spotify.client_id, cfg.spotify.client_secret, market=cfg.spotify.market)
                 src._ensure_token()
-                _row(table, "Spotify API auth", True, "token ok")
+                src._get("/search", q="track:Hello artist:Adele", type="track", limit=1, market=src.market)
+                _row(table, "Spotify API", True, "search works")
             except Exception as e:
-                _row(table, "Spotify API auth", False, str(e)[:120], "check the credentials; dev-mode apps need a Premium owner")
+                reason = src._dead or str(e)
+                _row(table, "Spotify API", False, reason[:160], "check the credentials; development-mode apps need a Premium owner")
         key = cfg.lastfm.configured
         _row(table, "Last.fm", True if key else None, "api key set" if key else "not configured (optional)",
              "" if key else "free key at https://www.last.fm/api/account/create → lastfm.api_key")

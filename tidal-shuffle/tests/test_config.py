@@ -102,3 +102,41 @@ def test_invalid_yaml_reports_path(isolated_home):
     path.write_text("shuffle: [unclosed")
     with pytest.raises(ConfigError, match="invalid YAML"):
         load_config(path, env={})
+
+
+def test_repo_example_matches_config_init():
+    from pathlib import Path
+    repo_example = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    assert repo_example.read_text() == EXAMPLE_CONFIG
+
+
+def test_missing_explicit_config_is_an_error(isolated_home, monkeypatch):
+    with pytest.raises(ConfigError, match="not found"):
+        load_config(isolated_home / "typo.yaml", env={})
+    monkeypatch.setenv("TIDAL_SHUFFLE_CONFIG", str(isolated_home / "also-missing.yaml"))
+    with pytest.raises(ConfigError, match="not found"):
+        load_config(env={})
+
+
+def test_env_config_path_is_used_by_init_and_loader(isolated_home, monkeypatch):
+    target = isolated_home / "custom" / "conf.yaml"
+    monkeypatch.setenv("TIDAL_SHUFFLE_CONFIG", str(target))
+    assert write_example_config() == target
+    assert load_config(env={}).config_path == target
+
+
+def test_scalar_sections_are_config_errors(isolated_home):
+    path = isolated_home / "config.yaml"
+    path.write_text("spotify: abc\n")
+    with pytest.raises(ConfigError, match="spotify: expected a mapping"):
+        load_config(path, env={})
+
+
+def test_odesli_key_is_masked():
+    cfg = load_config(overrides={"spotify": {"app": {"odesli_api_key": "SEKRIT"}}}, env={})
+    assert cfg.describe()["spotify"]["app"]["odesli_api_key"] == "***"
+
+
+def test_quit_after_accepts_auto_and_booleans():
+    assert load_config(env={}).spotify.app.quit_after == "auto"
+    assert load_config(overrides={"spotify": {"app": {"quit_after": "yes"}}}, env={}).spotify.app.quit_after is True

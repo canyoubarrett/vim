@@ -78,8 +78,12 @@ class TidalPlayer:
                 self.log(f"luna queue failed: {e}")
         return False
 
-    def ensure_ready(self) -> str:
-        """Prepare the preferred method at startup; returns the method name."""
+    def ensure_ready(self, allow_relaunch: bool = True) -> str:
+        """Prepare the preferred method at startup; returns the method name.
+
+        ``allow_relaunch=False`` never quits a running TIDAL (one-shot commands
+        must not stop the music they are about to act on).
+        """
         strategy = self.config.play_strategy
         if strategy in ("auto", "luna") and self.luna is not None and self.luna.alive():
             self._luna_ok = True
@@ -94,7 +98,7 @@ class TidalPlayer:
                 self._cdp_ok = True
                 return "luna-api" if self._luna_ok else ("cdp-luna" if self.cdp_luna_available() else "cdp")
             if self.config.auto_relaunch:
-                if self.cdp.launch(relaunch_if_running=True):
+                if self.cdp.launch(relaunch_if_running=allow_relaunch):
                     self._cdp_ok = True
                     self._luna_ok = None
                     return "luna-api" if self.luna_available() else ("cdp-luna" if self.cdp_luna_available() else "cdp")
@@ -122,7 +126,8 @@ class TidalPlayer:
         if not self.cdp_available():
             return False
         try:
-            return bool(self.cdp.prepare(track.id, timeout=min(15.0, max(3.0, self.config.prepare_seconds))))
+            window = self.config.prepare_seconds - self.config.handoff_seconds - 1.0
+            return bool(self.cdp.prepare(track.id, timeout=min(15.0, max(2.0, window))))
         except CdpError as e:
             self.log(f"prepare failed: {e}")
             self._cdp_ok = None

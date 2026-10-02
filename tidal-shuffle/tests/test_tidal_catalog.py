@@ -205,3 +205,40 @@ def test_persist_session_only_when_token_changed(tmp_path):
     sess.access_token = "new"
     assert persist_session(sess) is True and sess.saved == f
     assert persist_session(sess) is False
+
+
+def test_transient_search_failure_is_not_cached_as_no_match():
+    import requests
+    n = {"c": 0}
+    class Flaky(FakeSession):
+        def search(self, query, models=None, limit=50, offset=0):
+            n["c"] += 1
+            if n["c"] <= 4:  # one search = first try + three retries
+                raise requests.ConnectionError("reset")
+            return {"tracks": [fake_track(1, "Song", ["Artist"])]}
+    cat = TidalCatalog(Flaky(), sleep=lambda s: None)
+    assert cat.find("Song", "Artist")[0] is None
+    assert cat.find("Song", "Artist")[0].id == "1"
+
+
+def test_rate_limited_track_lookup_is_not_cached_as_missing():
+    from tidalapi.exceptions import TooManyRequests
+    class Limited(FakeSession):
+        limited = True
+        def track(self, track_id):
+            if self.limited:
+                raise TooManyRequests(retry_after=120)
+            return fake_track(int(track_id), "T", ["A"])
+    s = Limited()
+    cat = TidalCatalog(s, sleep=lambda x: None)
+    assert cat.get_track("123") is None
+    s.limited = False
+    assert cat.get_track("123").id == "123"
+
+
+def test_live_and_studio_versions_get_separate_cache_entries():
+    s = FakeSession(search_results={"blue monday": [fake_track(1, "Blue Monday", ["New Order"], version="Live"),
+                                                    fake_track(2, "Blue Monday", ["New Order"])]})
+    cat = TidalCatalog(s)
+    assert cat.find("Blue Monday (Live)", "New Order")[0].id == "1"
+    assert cat.find("Blue Monday", "New Order")[0].id == "2"

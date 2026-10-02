@@ -383,3 +383,100 @@ def test_songs_you_started_are_not_picked_again(tmp_path):
             break
     assert world.played == ["t-Next One", "t-Third"]
     assert [e.source for e in history.entries()][:2] == ["tidal", "lastfm"]
+
+
+def test_deep_link_pick_is_recorded_once_it_plays(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}}, verify=False)
+    world.start("Seed Song", "Seed Artist", duration=30, tidal_id="seed")
+    for _ in range(80):
+        loop.step(); clock.sleep(0.5)
+        if world.played:
+            break
+    assert not history.has_played(tidal_id="t-Next One")
+    world.start("Next One", "Band A", 180, "t-Next One")  # you press play on the opened song
+    loop.step()
+    assert history.has_played(tidal_id="t-Next One") and loop.state.picks_played == 1
+
+
+def test_orphaned_queue_pick_is_recognised_later(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(8):
+        loop.step(); clock.sleep(1)
+    assert loop.state.queued is not None
+    world.start("User Choice", "Someone", duration=300, tidal_id="user")  # you skip away
+    loop.step()
+    assert "t-Next One" in loop.state.orphaned
+    world.start("Next One", "Band A", 180, "t-Next One")  # TIDAL plays the old queued pick later
+    loop.step()
+    assert history.has_played(tidal_id="t-Next One")
+    assert any("earlier pick" in m for m in logs)
+
+
+def test_skip_now_with_a_queued_pick_just_moves_on(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    presses = []
+    world.press = lambda control: presses.append(control) or True
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(8):
+        loop.step(); clock.sleep(1)
+    assert loop.skip_now() is True
+    assert presses == ["next"] and world.played == []
+
+
+def test_skip_now_without_queue_does_not_queue_and_play_twice(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    assert loop.skip_now() is True
+    assert world.queued is None and world.played == ["t-Next One"]
+
+
+def test_slow_prepare_still_hands_off(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    real_prepare = world.prepare
+    def slow_prepare(track):
+        clock.sleep(9.0)  # the track page took ages to render
+        return real_prepare(track)
+    world.prepare = slow_prepare
+    world.start("Seed Song", "Seed Artist", duration=40, tidal_id="seed")
+    for _ in range(120):
+        loop.step(); clock.sleep(0.4)
+        if world.played:
+            break
+    assert world.played == ["t-Next One"]
+
+
+def test_failed_pick_is_never_retried_even_with_a_thin_pool(tmp_path):
+    src = StaticSource([Candidate("Broken", "B1", score=0.9, duration=200)], name="lastfm")
+    cfg = load_config(overrides={"shuffle": {"strategy": "top"}}, env={})
+    engine = Engine(cfg, [src], FakeCatalog(), HistoryStore(tmp_path / "h.json"), rng=random.Random(0))
+    from tidal_shuffle.models import Seed
+    plan = engine.plan(Seed("Seed", "S"), exclude_keys={("broken", "b1")})
+    assert plan.picks == []
+
+
+def test_current_song_is_never_offered_in_anchor_mode(tmp_path):
+    src = StaticSource([Candidate("User Choice", "Someone", score=0.99, duration=200),
+                        Candidate("Other", "O", score=0.5, duration=200)], name="lastfm")
+    cfg = load_config(overrides={"shuffle": {"strategy": "top", "seed": "anchor", "allow_seed_artist": True}}, env={})
+    engine = Engine(cfg, [src], FakeCatalog(), HistoryStore(tmp_path / "h.json"), rng=random.Random(0))
+    from tidal_shuffle.models import Seed
+    plan = engine.plan(Seed("User Choice", "Someone"), anchor=Seed("Start", "X"))
+    assert [p.track.title for p in plan.picks] == ["Other"]
+
+
+def test_planner_thread_is_a_daemon(tmp_path):
+    src = SlowSource(cands())
+    loop, world, clock, logs = build_bg(tmp_path, src)
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(6):
+        loop.step(); clock.sleep(1)
+    assert src.started.wait(2)
+    import threading
+    planners = [t for t in threading.enumerate() if t.name == "tidal-shuffle-planner"]
+    assert planners and all(t.daemon for t in planners)
+    src.release.set()
+    loop.close()

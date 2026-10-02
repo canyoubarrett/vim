@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..matching import DEFAULT_ACCEPT_THRESHOLD, core_title, primary_artist, score_match
+from ..matching import DEFAULT_ACCEPT_THRESHOLD, core_title, normalize, primary_artist, score_match, strip_featuring
 from ..models import Candidate, Seed, TidalTrack
 
 log = logging.getLogger(__name__)
@@ -151,8 +151,10 @@ class TidalCatalog:
                 return fn()
             except TooManyRequests as e:
                 wait = e.retry_after if getattr(e, "retry_after", -1) and e.retry_after > 0 else 2 ** attempt
+                if wait > 30:
+                    raise  # retrying early would only earn another 429
                 self.log(f"TIDAL rate limited during {what}; waiting {wait}s")
-                self._sleep(min(float(wait), 30.0))
+                self._sleep(float(wait))
             except requests.HTTPError as e:
                 status = getattr(getattr(e, "response", None), "status_code", 0) or 0
                 if status < 500:
@@ -186,15 +188,18 @@ class TidalCatalog:
         return [to_track(t) for t in items or []]
 
     def get_track(self, tidal_id: str) -> Optional[TidalTrack]:
-        from tidalapi.exceptions import TidalAPIError
+        from tidalapi.exceptions import ObjectNotFound, TidalAPIError
 
         tidal_id = str(tidal_id)
         if tidal_id in self._track_cache:
             return self._track_cache[tidal_id]
         try:
             track = to_track(self._retry(lambda: self.session.track(tidal_id), f"track {tidal_id}"))
-        except TidalAPIError:
-            track = None
+        except ObjectNotFound:
+            track = None  # genuinely gone: remember that
+        except Exception as e:  # rate limit, auth refresh, network: try again next time
+            self.log(f"TIDAL track {tidal_id} lookup failed: {e}")
+            return None
         self._track_cache[tidal_id] = track
         return track
 
@@ -263,12 +268,13 @@ class TidalCatalog:
     def find(self, title: str, artist: str, duration: Optional[float] = None,
              isrc: Optional[str] = None) -> tuple[Optional[TidalTrack], float]:
         """Best TIDAL track for a song, with the match score (0 if none)."""
-        key = (core_title(title).lower(), primary_artist(artist).lower(), isrc or "")
+        key = (normalize(strip_featuring(title)), normalize(primary_artist(artist)), isrc or "")
         if key in self._find_cache:
             return self._find_cache[key]
 
         best: Optional[TidalTrack] = None
         best_score = 0.0
+        failed = False
         if isrc:
             for t in self.tracks_by_isrc(isrc):
                 if not t.available:
@@ -286,6 +292,7 @@ class TidalCatalog:
                     hits = self.search_tracks(q)
                 except Exception as e:
                     self.log(f"TIDAL search failed for {q!r}: {e}")
+                    failed = True
                     continue
                 for t in hits:
                     if t.id in seen:
@@ -300,7 +307,8 @@ class TidalCatalog:
             result: tuple[Optional[TidalTrack], float] = (None, best_score)
         else:
             result = (best, best_score)
-        self._find_cache[key] = result
+        if not (failed and result[0] is None):  # a network hiccup is not a "no match"
+            self._find_cache[key] = result
         return result
 
     # -- Catalog protocol ---------------------------------------------------

@@ -13,11 +13,12 @@ from typing import Optional
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
-from .config import (CONFIG_FILE, EXAMPLE_CONFIG, AppConfig, ConfigError, all_presets, load_config,
+from .config import (EXAMPLE_CONFIG, AppConfig, ConfigError, all_presets, default_config_path, load_config,
                      read_config_file, write_example_config)
 from .models import Seed
 
@@ -30,7 +31,7 @@ def _stamp() -> str:
 
 
 def say(msg: str) -> None:
-    console.print(f"[dim]{_stamp()}[/dim] {msg}", highlight=False, markup=False)
+    console.print(f"[dim]{_stamp()}[/dim] {escape(msg)}", highlight=False)
 
 
 class Verbose:
@@ -39,7 +40,7 @@ class Verbose:
     @classmethod
     def log(cls, msg: str) -> None:
         if cls.enabled:
-            console.print(f"[dim]{_stamp()}   {msg}[/dim]", highlight=False, markup=False)
+            console.print(f"[dim]{_stamp()}   {escape(msg)}[/dim]", highlight=False)
 
 
 def common_options(fn):
@@ -124,7 +125,7 @@ def _describe_sources(rt) -> Table:
     table.add_column("status")
     for s in rt.sources:
         ok, reason = s.available()
-        table.add_row(s.name, "[green]ready[/green]" if ok else f"[yellow]off[/yellow] [dim]{reason}[/dim]")
+        table.add_row(s.name, "[green]ready[/green]" if ok else f"[yellow]off[/yellow] [dim]{escape(reason)}[/dim]")
     return table
 
 
@@ -175,6 +176,7 @@ def run(dry_run, once, **kwargs):
     try:
         loop.run(dry_run=dry_run, once=once)
     except KeyboardInterrupt:
+        rt.abort()
         console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
     finally:
         rt.close()
@@ -200,10 +202,10 @@ def test(**kwargs):
     rt.close()
     if plan is None or not plan.picks:
         raise click.ClickException("no pick could be made")
-    table = Table(title=f"after {plan.seed.label()}", show_header=True, header_style="bold")
+    table = Table(title=f"after {escape(plan.seed.label())}", show_header=True, header_style="bold")
     table.add_column("#"); table.add_column("song"); table.add_column("source"); table.add_column("why")
     for i, p in enumerate(plan.picks, 1):
-        table.add_row(str(i), p.track.label(), p.source, p.reason)
+        table.add_row(str(i), escape(p.track.label()), p.source, escape(p.reason))
     console.print(table)
 
 
@@ -216,8 +218,11 @@ def next_cmd(**kwargs):
     rt = _runtime(cfg)
     from .loop import ShuffleLoop
 
+    np = rt.nowplaying.read()
+    if np is None or not np.is_tidal:
+        raise click.ClickException("TIDAL is not playing anything right now")
     try:
-        rt.player.ensure_ready()
+        rt.player.ensure_ready(allow_relaunch=False)  # never stop the music we are about to skip
     except RuntimeError as e:
         raise click.ClickException(str(e))
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say)
@@ -249,11 +254,15 @@ def login(force, config_path):
 @click.option("--config", "config_path", type=click.Path(path_type=Path))
 def presets(config_path):
     """List the built-in and user-defined presets."""
-    raw, _ = read_config_file(config_path)
+    try:
+        raw, _ = read_config_file(config_path)
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+    file_presets = raw.get("presets") if isinstance(raw.get("presets"), dict) else {}
     table = Table(show_header=True, header_style="bold")
     table.add_column("preset"); table.add_column("description"); table.add_column("settings")
-    for name, p in sorted(all_presets(raw.get("presets") if isinstance(raw, dict) else {}).items()):
-        p = dict(p or {})
+    for name, p in sorted(all_presets(file_presets).items()):
+        p = dict(p) if isinstance(p, dict) else {}
         desc = str(p.pop("description", ""))
         bits = []
         for section, values in p.items():
@@ -265,7 +274,7 @@ def presets(config_path):
                 bits.append(f"{section}: {inner}")
             else:
                 bits.append(f"{section}={values}")
-        table.add_row(name, desc, "; ".join(bits))
+        table.add_row(escape(str(name)), escape(desc), escape("; ".join(bits)))
     console.print(table)
 
 
@@ -278,27 +287,27 @@ def sources(seed, limit, **kwargs):
     cfg = _config_from(kwargs)
     rt = _runtime(cfg)
     seed_obj = _seed_from(seed, rt)
-    console.print(f"[bold]seed:[/bold] {seed_obj.label()}\n")
+    console.print(f"[bold]seed:[/bold] {escape(seed_obj.label())}\n")
     for s in rt.sources:
         ok, reason = s.available()
         if not ok:
-            console.print(f"[yellow]{s.name}[/yellow]: off ({reason})")
+            console.print(f"[yellow]{s.name}[/yellow]: off ({escape(reason)})")
             continue
         try:
             cands = s.candidates([seed_obj], limit)
         except Exception as e:
-            console.print(f"[red]{s.name}[/red]: error: {e}")
+            console.print(f"[red]{s.name}[/red]: error: {escape(str(e))}")
             continue
         console.print(f"[green]{s.name}[/green]: {len(cands)} candidates")
         for c in cands[:limit]:
-            console.print(f"   {c.score:.2f}  {c.label()}" + (f"  [dim]({c.album})[/dim]" if c.album else ""), markup=True, highlight=False)
+            console.print(f"   {c.score:.2f}  {escape(c.label())}" + (f"  [dim]({escape(c.album)})[/dim]" if c.album else ""), highlight=False)
     rt.close()
 
 
-def _seed_from(seed: Optional[str], rt) -> Seed:
+def _seed_from(seed: Optional[str], rt, hint: str = '--seed "Title - Artist"') -> Seed:
     if seed:
         if " - " not in seed:
-            raise click.ClickException('use --seed "Title - Artist"')
+            raise click.ClickException(f"use {hint}")
         title, artist = [p.strip() for p in seed.split(" - ", 1)]
         return Seed(title=title, artist=artist)
     np = rt.nowplaying.read()
@@ -322,7 +331,7 @@ def history(clear, count):
         return
     for e in store.recent(count):
         when = _dt.datetime.fromtimestamp(e.ts).strftime("%Y-%m-%d %H:%M") if e.ts else "?"
-        console.print(f"{when}  {e.title} — {e.artist}  [dim]{e.source or ''}[/dim]", highlight=False)
+        console.print(f"{when}  {escape(e.title)} — {escape(e.artist)}  [dim]{escape(e.source or '')}[/dim]", highlight=False)
     console.print(f"[dim]{len(store)} entries total[/dim]")
 
 
@@ -355,7 +364,7 @@ def config_show(**kwargs):
 
 @config.command("path")
 def config_path_cmd():
-    console.print(str(Path(os.environ.get("TIDAL_SHUFFLE_CONFIG", CONFIG_FILE))))
+    console.print(str(default_config_path()), markup=False)
 
 
 @cli.command()
@@ -401,7 +410,7 @@ def playtest(track, config_path, method):
         if t is None:
             raise click.ClickException(f"TIDAL track {track} not found")
     elif track:
-        seed = _seed_from(track, rt)
+        seed = _seed_from(track, rt, hint='a TIDAL track id or "Title - Artist"')
         t, score = rt.catalog.find(seed.title, seed.artist)
         if t is None:
             raise click.ClickException(f"could not find {track!r} on TIDAL (best score {score:.2f})")
@@ -415,20 +424,20 @@ def playtest(track, config_path, method):
         if not cands:
             raise click.ClickException("no candidate to test with; give a track id")
         t = rt.catalog.match(cands[0]) or TidalTrack(id=cands[0].tidal_id, title=cands[0].title, artist=cands[0].artist)
-    console.print(f"target: {t.label()}  (id {t.id})")
+    console.print(f"target: {escape(t.label())}  (id {t.id})")
     try:
         ready = rt.player.ensure_ready()
     except RuntimeError as e:
         raise click.ClickException(str(e))
     console.print(f"method: {ready}")
     outcome = rt.player.play(t)
-    console.print(f"result: {'[green]ok[/green]' if outcome.ok else '[red]failed[/red]'}  via {outcome.method}  {outcome.detail}")
+    console.print(f"result: {'[green]ok[/green]' if outcome.ok else '[red]failed[/red]'}  via {outcome.method}  {escape(outcome.detail)}")
     if not outcome.ok:
         import time
 
         time.sleep(3)
         np = rt.nowplaying.read()
-        console.print(f"now playing afterwards: {np.label() if np else 'nothing'}")
+        console.print(f"now playing afterwards: {escape(np.label()) if np else 'nothing'}")
     rt.close()
 
 
@@ -472,7 +481,7 @@ def harvest(title, artist, config_path, limit):
     if seed.spotify_id:
         console.print(f"[dim]found on Spotify as spotify:track:{seed.spotify_id} via {src.last_lookup}[/dim]")
     for c in cands:
-        console.print(f"  {c.score:.2f}  {c.label()}  [dim]{c.album or ''}[/dim]", highlight=False)
+        console.print(f"  {c.score:.2f}  {escape(c.label())}  [dim]{escape(c.album or '')}[/dim]", highlight=False)
     console.print(f"[dim]{len(cands)} songs[/dim]")
 
 
@@ -499,16 +508,26 @@ def spotify_ui_cmd(find, limit, config_path):
             if " - " not in find:
                 raise click.ClickException('use --find "Title - Artist"')
             title, artist = [p.strip() for p in find.split(" - ", 1)]
-            from .applescript import default_runner
+            from .app import build_spotify_app
             from .sources.spotify_app import MUTE_SCRIPT
 
-            runner = default_runner()
-            if runner is not None:
-                runner.run(MUTE_SCRIPT, timeout=8)
-            button = ui.find_and_play(title, artist)
-            if button is None:
-                raise click.ClickException("no matching song found on Spotify's search page")
-            console.print(f"pressed: {button.label}  (match {button.score:.2f})")
+            src = build_spotify_app(cfg, None, None, say)
+            ok, reason = src.available()
+            if not ok:
+                raise click.ClickException(reason)
+            volume = src.ensure_running().get("volume")
+            try:
+                src.runner.run(MUTE_SCRIPT, timeout=8)
+                button = ui.find_and_play(title, artist)
+                if button is None:
+                    raise click.ClickException("no matching song found on Spotify's search page")
+                console.print(f"pressed: {escape(button.label)}  (match {button.score:.2f})")
+                import time as _time
+                _time.sleep(2.0)
+                cur = src.current()
+                console.print(f"Spotify is now on: {escape(cur.get('name', ''))} — {escape(cur.get('artist', ''))}  ({cur.get('id', '?')})")
+            finally:
+                src._restore(volume)  # pause Spotify and put its volume back
             return
         rows = ui.dump(limit=limit)
     except SpotifyUIError as e:
@@ -519,7 +538,7 @@ def spotify_ui_cmd(find, limit, config_path):
         if label.startswith(app_cfg.ui_label_prefix) and app_cfg.ui_label_by in label:
             mark = "  [green]← track button[/green]"
             plays += 1
-        console.print(f"[dim]{role:12}[/dim] {label}{mark}", highlight=False)
+        console.print(f"[dim]{role:12}[/dim] {escape(label)}{mark}", highlight=False)
     console.print(f"[dim]{len(rows)} labelled elements, {plays} track play buttons[/dim]")
 
 

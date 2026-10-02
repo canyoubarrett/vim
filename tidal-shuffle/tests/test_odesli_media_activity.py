@@ -159,3 +159,17 @@ def test_detect_backend_prefers_media_control_or_none(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: None)
     assert detect_backend("auto") is None
     assert detect_backend("nowplaying-cli").name == "nowplaying-cli"
+
+
+def test_nowplaying_cli_frozen_clock_is_ignored():
+    t = {"now": 0.0}
+    def run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"title": "S", "artist": "A", "duration": 200,
+                                                                        "elapsedTime": 0, "playbackRate": 1}), stderr="")
+    logs = []
+    b = NowPlayingCliBackend(binary="/fake/nowplaying-cli", run=run, clock=lambda: t["now"], log=logs.append)
+    activity._busy_until.clear()
+    assert b.read().elapsed == 0
+    t["now"] = 2.0
+    np = b.read()
+    assert np.elapsed is None and np.timestamp is None and logs

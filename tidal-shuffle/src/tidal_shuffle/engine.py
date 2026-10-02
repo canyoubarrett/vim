@@ -102,10 +102,12 @@ class Engine:
                 break
         return pool
 
-    def _clean(self, pool: list[Candidate], seeds: list[Seed]) -> list[Candidate]:
+    def _clean(self, pool: list[Candidate], avoid: list[Seed], exclude_keys: Optional[set] = None) -> list[Candidate]:
         out: list[Candidate] = []
         for c in dedupe(pool):
-            if any(same_song(c.title, c.artist, s.title, s.artist) for s in seeds):
+            if exclude_keys and c.key in exclude_keys:
+                continue  # e.g. a pick that TIDAL just refused to play
+            if any(same_song(c.title, c.artist, s.title, s.artist) for s in avoid):
                 continue
             if looks_like_knockoff(c.title, c.artist):
                 continue
@@ -139,7 +141,9 @@ class Engine:
             plan.notes.append(f"seed unresolved: {e}")
 
         seeds = self.effective_seeds(current, anchor, recent)
-        pool = self._clean(self._gather(seeds, plan), seeds)
+        # Never offer the song now playing, the seeds, or the last few songs heard.
+        avoid = [current] + [s for s in seeds if s is not current] + list(recent)[-3:]
+        pool = self._clean(self._gather(seeds, plan), avoid, exclude_keys)
         plan.candidates_considered = len(pool)
         if not pool:
             plan.notes.append("no candidates from any source")
@@ -147,8 +151,6 @@ class Engine:
             return plan
 
         ctx = self._context(current)
-        if exclude_keys:
-            ctx.recent_keys = set(ctx.recent_keys) | set(exclude_keys)
         ordered, note = order_candidates(pool, ctx, self.config.shuffle.strategy, self.rng)
         if note:
             plan.notes.append(note)

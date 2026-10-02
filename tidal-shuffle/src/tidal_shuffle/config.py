@@ -35,7 +35,7 @@ class SpotifyAppConfig:
     mute: bool = True            # set Spotify's volume to 0 while harvesting
     restore: bool = True         # put Spotify's volume back afterwards
     hide_window: bool = True     # keep Spotify out of the way when we launch it
-    quit_after: bool = False     # quit Spotify after each harvest
+    quit_after: Any = "auto"     # quit Spotify after a harvest: auto (if we launched it) | true | false
     skip_delay: float = 0.0      # extra pause after each skip (gentler on Spotify)
     launch_timeout: float = 25.0 # seconds to wait for Spotify to answer AppleScript
     max_seconds: float = 60.0    # abort a harvest that takes longer than this
@@ -139,6 +139,8 @@ class AppConfig:
             d["spotify"]["client_secret"] = "***"
         if self.lastfm.api_key:
             d["lastfm"]["api_key"] = "***"
+        if self.spotify.app.odesli_api_key:
+            d["spotify"]["app"]["odesli_api_key"] = "***"
         return d
 
 
@@ -253,7 +255,8 @@ spotify:
     mute: true              # Spotify is muted while it is harvesting
     restore: true           # and its volume is put back afterwards
     hide_window: true
-    quit_after: false
+    quit_after: auto        # quit Spotify after a harvest if Tidal Shuffle opened it
+                            # (an open Spotify would capture your media keys)
     max_seconds: 60         # give up on a harvest after this long
     app_path: ""            # set if Spotify.app is not in /Applications
     # How the song TIDAL is playing is found on Spotify, tried in order:
@@ -400,6 +403,13 @@ def _sources_from(value: Any, name: str) -> list[str]:
     return out
 
 
+def _section(data: Mapping, name: str) -> Mapping:
+    value = data.get(name) or {}
+    if not isinstance(value, Mapping):
+        raise ConfigError(f"{name}: expected a mapping, got {type(value).__name__}")
+    return value
+
+
 ID_LOOKUPS = ("spotify-api", "listenbrainz", "spotify-ui", "odesli")
 
 
@@ -423,9 +433,9 @@ def _upgrade_legacy(data: dict) -> dict:
     data = dict(data)
     legacy = data.pop("defaults", None)
     if isinstance(legacy, Mapping):
-        shuffle = dict(data.get("shuffle") or {})
-        player = dict(data.get("player") or {})
-        spotify = dict(data.get("spotify") or {})
+        shuffle = dict(_section(data, "shuffle"))
+        player = dict(_section(data, "player"))
+        spotify = dict(_section(data, "spotify"))
         if "batch_size" in legacy:
             shuffle.setdefault("candidates", legacy["batch_size"])
         if "seconds_before_end" in legacy:
@@ -490,7 +500,7 @@ def _build(data: Mapping) -> AppConfig:
         "auto_relaunch": _as_bool,
         "luna_port": lambda v, n: int(_as_number(v, n, int, 1, 65535)),
     })
-    spotify = dict(data.get("spotify") or {})
+    spotify = dict(_section(data, "spotify"))
     app_data = spotify.pop("app", None)
     vibe_data = spotify.pop("vibe", None)
     _fill(cfg.spotify, spotify, "spotify", {
@@ -502,7 +512,8 @@ def _build(data: Mapping) -> AppConfig:
             "enabled": _as_bool,
             "harvest": lambda v, n: int(_as_number(v, n, int, 1, 200)),
             "seed_method": lambda v, n: _as_choice(v, n, ("auto", "station", "autoplay")),
-            "mute": _as_bool, "restore": _as_bool, "hide_window": _as_bool, "quit_after": _as_bool,
+            "mute": _as_bool, "restore": _as_bool, "hide_window": _as_bool,
+            "quit_after": lambda v, n: "auto" if str(v).strip().lower() == "auto" else _as_bool(v, n),
             "skip_delay": lambda v, n: _as_number(v, n, float, 0, 10),
             "launch_timeout": lambda v, n: _as_number(v, n, float, 1, 300),
             "max_seconds": lambda v, n: _as_number(v, n, float, 5, 600),
@@ -531,10 +542,25 @@ def _build(data: Mapping) -> AppConfig:
     return cfg
 
 
+def default_config_path() -> Path:
+    """The config file used when none is given: $TIDAL_SHUFFLE_CONFIG or ~/.config/tidal-shuffle/config.yaml."""
+    from . import paths
+
+    env = os.environ.get("TIDAL_SHUFFLE_CONFIG")
+    return Path(env).expanduser() if env else paths.CONFIG_FILE
+
+
 def read_config_file(path: Optional[Path] = None) -> tuple[dict, Optional[Path]]:
-    """Return the raw mapping from the YAML file (empty if none) and its path."""
-    path = Path(path).expanduser() if path else Path(os.environ.get("TIDAL_SHUFFLE_CONFIG", CONFIG_FILE)).expanduser()
+    """Return the raw mapping from the YAML file (empty if none) and its path.
+
+    Only the implicit default may be missing; a path you named explicitly (with
+    ``--config`` or ``TIDAL_SHUFFLE_CONFIG``) must exist.
+    """
+    explicit = path is not None or bool(os.environ.get("TIDAL_SHUFFLE_CONFIG"))
+    path = Path(path).expanduser() if path else default_config_path()
     if not path.exists():
+        if explicit:
+            raise ConfigError(f"{path}: config file not found")
         return {}, None
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -596,7 +622,7 @@ def load_config(
 
 
 def write_example_config(path: Optional[Path] = None, overwrite: bool = False) -> Path:
-    path = Path(path) if path else CONFIG_FILE
+    path = Path(path).expanduser() if path else default_config_path()
     if path.exists() and not overwrite:
         raise FileExistsError(str(path))
     path.parent.mkdir(parents=True, exist_ok=True)

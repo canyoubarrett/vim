@@ -12,11 +12,13 @@ from typing import Callable, Optional, Sequence
 
 import httpx
 
+from ..cache import DiskCache
 from ..http import HttpError, get_json, make_client
 from ..models import Candidate, Seed
 from .base import tag
 
 API_URL = "https://ws.audioscrobbler.com/2.0/"
+FATAL_CODES = {4: "authentication failed", 10: "invalid API key", 26: "API key suspended"}
 
 
 class LastfmError(RuntimeError):
@@ -27,38 +29,70 @@ class LastfmSource:
     name = "lastfm"
 
     def __init__(self, api_key: Optional[str], expand_similar_artists: bool = True,
-                 client: Optional[httpx.Client] = None, sleep: Callable[[float], None] = time.sleep):
+                 client: Optional[httpx.Client] = None, sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic, disk_cache: Optional[DiskCache] = None,
+                 min_interval: float = 0.25):
         self.api_key = api_key
         self.expand_similar_artists = expand_similar_artists
         self._client = client or make_client()
         self._sleep = sleep
+        self._clock = clock
+        self._last = -1e9
+        self.min_interval = min_interval  # Last.fm allows 5 requests/s on average; stay well under
         self._cache: dict[tuple, object] = {}
+        self._disk = disk_cache  # Last.fm's terms ask for similarity data to be cached for a week
+        self._dead: Optional[str] = None
 
     # ------------------------------------------------------------------
     def available(self) -> tuple[bool, str]:
         if not self.api_key or "your_" in self.api_key:
             return False, "no Last.fm API key (lastfm.api_key or LASTFM_API_KEY)"
+        if self._dead:
+            return False, self._dead
         return True, ""
 
     def _call(self, method: str, **params) -> dict:
-        key = (method, tuple(sorted(params.items())))
+        key = (method, tuple(sorted((k, str(v)) for k, v in params.items())))
         if key in self._cache:
             return self._cache[key]  # type: ignore[return-value]
+        disk_key = repr(key)
+        if self._disk is not None:
+            hit = self._disk.get(disk_key)
+            if hit is not None:
+                self._cache[key] = hit
+                return hit
+        if self._dead:
+            raise LastfmError(self._dead)
         query = {"method": method, "api_key": self.api_key, "format": "json", "autocorrect": 1}
         query.update({k: v for k, v in params.items() if v is not None})
-        try:
-            data = get_json(self._client, API_URL, params=query, sleep=self._sleep)
-        except HttpError as e:
-            # Last.fm returns errors as JSON with a 400 status; surface the message.
-            raise LastfmError(str(e)) from None
-        if isinstance(data, dict) and "error" in data:
-            code = data.get("error")
+        for attempt in range(2):
+            wait = self.min_interval - (self._clock() - self._last)
+            if wait > 0:
+                self._sleep(wait)
+            self._last = self._clock()
+            try:
+                # Last.fm puts the real error in the JSON body, often with HTTP 400/403/404.
+                data = get_json(self._client, API_URL, params=query, sleep=self._sleep,
+                                error_body_statuses=(400, 403, 404))
+            except HttpError as e:
+                raise LastfmError(str(e)) from None
+            code = data.get("error") if isinstance(data, dict) else None
+            if code == 29 and attempt == 0:  # rate limit exceeded
+                self._sleep(10.0)
+                continue
+            break
+        if code is not None:
             msg = data.get("message", "unknown error")
             if code == 6:  # "track not found" and friends
                 data = {}
+            elif code in FATAL_CODES:
+                self._dead = f"Last.fm: {FATAL_CODES[code]} ({msg})"
+                raise LastfmError(self._dead)
             else:
                 raise LastfmError(f"Last.fm error {code}: {msg}")
         self._cache[key] = data
+        if self._disk is not None and data:
+            self._disk.set(disk_key, data)
         return data
 
     # ------------------------------------------------------------------
@@ -156,4 +190,6 @@ class LastfmSource:
         return tag(cands[:limit], self.name)
 
     def close(self) -> None:
+        if self._disk is not None:
+            self._disk.flush()
         self._client.close()

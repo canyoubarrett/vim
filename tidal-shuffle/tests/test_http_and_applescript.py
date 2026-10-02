@@ -19,15 +19,31 @@ def test_get_json_retries_5xx_then_raises_4xx():
     assert e.value.status == 404
 
 
-def test_get_json_honours_retry_after_cap():
+def test_get_json_waits_out_short_rate_limits():
     waits = []
     n = {"c": 0}
     def handler(request):
         n["c"] += 1
-        return httpx.Response(429, headers={"Retry-After": "40"}) if n["c"] == 1 else httpx.Response(200, json={})
+        return httpx.Response(429, headers={"Retry-After": "3"}) if n["c"] == 1 else httpx.Response(200, json={})
     client = httpx.Client(transport=httpx.MockTransport(handler))
     get_json(client, "https://x", sleep=waits.append, max_retry_after=5)
-    assert waits == [5]
+    assert waits == [3.0]
+
+
+def test_get_json_does_not_retry_before_a_long_window_ends():
+    calls = []
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(429, headers={"Retry-After": "40"})
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(HttpError) as e:
+        get_json(client, "https://x", sleep=lambda s: None, max_retry_after=5)
+    assert e.value.status == 429 and e.value.retry_after == 40.0 and len(calls) == 1
+
+
+def test_error_bodies_can_be_returned():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400, json={"error": 6, "message": "Track not found"})))
+    assert get_json(client, "https://x", error_body_statuses=(400,)) == {"error": 6, "message": "Track not found"}
 
 
 def test_get_json_gives_up_on_hours_long_rate_limits():

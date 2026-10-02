@@ -211,12 +211,33 @@ class NowPlayingCliBackend:
     name = "nowplaying-cli"
 
     def __init__(self, binary: Optional[str] = None, run: Runner = subprocess.run, assume_tidal: bool = True,
-                 log: Optional[Callable[[str], None]] = None):
+                 log: Optional[Callable[[str], None]] = None, clock: Callable[[], float] = time.monotonic):
         self.binary = binary or shutil.which("nowplaying-cli") or "/opt/homebrew/bin/nowplaying-cli"
         self._run = run
         self.assume_tidal = assume_tidal
         self.log = log or (lambda m: None)
+        self._clock = clock
         self._json_supported: Optional[bool] = None
+        self._last: Optional[tuple] = None   # (title, elapsed, read time) of the previous playing read
+        self._frozen = False
+
+    def _check_clock(self, np: NowPlaying) -> NowPlaying:
+        """Some nowplaying-cli builds report an elapsed time that never moves. A
+        frozen position would keep pushing the hand-off into the future, so drop
+        it and let the loop count time itself."""
+        now = self._clock()
+        if np.playing and np.elapsed is not None:
+            last = self._last
+            if last and last[0] == np.title and now - last[2] >= 1.5 and abs(np.elapsed - last[1]) < 0.2:
+                if not self._frozen:
+                    self.log("nowplaying-cli reports a frozen playback position; timing songs locally "
+                             "(install media-control for exact timing)")
+                self._frozen = True
+            self._last = (np.title, np.elapsed, now)
+        if self._frozen:
+            np.elapsed = None
+            np.timestamp = None
+        return np
 
     def available(self) -> tuple[bool, str]:
         if not _binary_ok(self.binary):
@@ -239,12 +260,14 @@ class NowPlayingCliBackend:
             out = self._get(use_json=True)
             if out is not None and out.strip().startswith("{"):
                 self._json_supported = True
-                return parse_nowplaying_cli(out, assume_tidal=self.assume_tidal)
+                np = parse_nowplaying_cli(out, assume_tidal=self.assume_tidal)
+                return self._check_clock(np) if np else None
             self._json_supported = False  # v1: prints help text for unknown flags
         out = self._get(use_json=False)
         if out is None:
             return None
-        return parse_nowplaying_cli(out, assume_tidal=self.assume_tidal)
+        np = parse_nowplaying_cli(out, assume_tidal=self.assume_tidal)
+        return self._check_clock(np) if np else None
 
 
 def detect_backend(preference: str = "auto", log: Optional[Callable[[str], None]] = None):

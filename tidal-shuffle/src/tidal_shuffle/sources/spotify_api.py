@@ -70,6 +70,7 @@ class SpotifyApiSource:
         self._token: Optional[str] = None
         self._token_expires = 0.0
         self._dead: Optional[str] = None
+        self._paused_until = 0.0
         self.recommendations_available: Optional[bool] = None
         self.related_available: Optional[bool] = None
         self.top_tracks_available: Optional[bool] = None
@@ -81,6 +82,8 @@ class SpotifyApiSource:
             return False, "no Spotify client_id/client_secret configured"
         if self._dead:
             return False, self._dead
+        if self._now() < self._paused_until:
+            return False, f"rate limited for another {self._paused_until - self._now():.0f}s"
         return True, ""
 
     def _ensure_token(self) -> str:
@@ -123,9 +126,10 @@ class SpotifyApiSource:
                 self.log(self._dead)
                 raise SpotifyAuthError(self._dead) from None
             elif e.status == 429:
-                self._dead = "Spotify rate-limited this app for a long time; disabled for this session"
-                self.log(self._dead)
-                raise SpotifyAuthError(self._dead) from None
+                wait = e.retry_after if e.retry_after else 60.0
+                self._paused_until = self._now() + wait
+                self.log(f"Spotify rate-limited this app; pausing the Web API for {wait:.0f}s")
+                raise SpotifyAuthError("Spotify rate limit") from None
             else:
                 raise
         self._cache[key] = data

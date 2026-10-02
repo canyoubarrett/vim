@@ -38,6 +38,16 @@ class Runtime:
     nowplaying: NowPlayingBackend
     notes: list[str] = field(default_factory=list)
 
+    def abort(self) -> None:
+        """Ctrl+C: leave every app the way we found it (e.g. Spotify mid-harvest)."""
+        for s in self.sources:
+            abort = getattr(s, "abort", None)
+            if abort:
+                try:
+                    abort()
+                except Exception:
+                    pass
+
     def close(self) -> None:
         for s in self.sources:
             close = getattr(s, "close", None)
@@ -80,7 +90,11 @@ def build_sources(cfg: AppConfig, catalog: Optional[TidalCatalog], logger: Optio
         elif name == "lastfm":
             from .sources.lastfm import LastfmSource
 
-            out.append(LastfmSource(cfg.lastfm.api_key, expand_similar_artists=cfg.lastfm.expand_similar_artists))
+            from . import paths
+            from .cache import DiskCache
+
+            out.append(LastfmSource(cfg.lastfm.api_key, expand_similar_artists=cfg.lastfm.expand_similar_artists,
+                                    disk_cache=DiskCache(paths.CONFIG_DIR / "cache" / "lastfm.json", ttl=7 * 86400)))
         elif name == "deezer":
             from .sources.deezer import DeezerSource
 
