@@ -29,7 +29,7 @@ def test_all_snippets_parse():
     cdp.click_play_for_track("123")
     for c in ("play", "pause", "next", "previous"):
         cdp.press(c)
-    cdp.inspect(); cdp.has_luna(); cdp.luna_queue_next("5"); cdp.luna_play_now("5"); cdp.luna_state(); cdp.current_path()
+    cdp.inspect(); cdp.inspect("123"); cdp.store_play("123"); cdp.has_luna(); cdp.luna_queue_next("5"); cdp.luna_play_now("5"); cdp.luna_state(); cdp.current_path()
     assert len(captured) >= 14
     for js in captured:
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:

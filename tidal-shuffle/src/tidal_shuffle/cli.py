@@ -400,16 +400,8 @@ def now(config_path):
         console.print("[yellow]tidal (cdp)[/yellow]: TIDAL not reachable on the debug port")
 
 
-@cli.command()
-@click.argument("track", required=False)
-@click.option("--config", "config_path", type=click.Path(path_type=Path))
-@click.option("--method", type=click.Choice(["auto", "luna", "cdp", "open-url", "open-url-play"]), default="auto", show_default=True)
-def playtest(track, config_path, method):
-    """Try to make TIDAL play a track (id or "Title - Artist") and report what worked."""
-    cfg = _config_from({"config_path": config_path})
-    _require_macos("tidal-shuffle playtest")
-    cfg.player.play_strategy = method
-    rt = _runtime(cfg)
+def _resolve_track(track, rt):
+    """A TIDAL track from an id, "Title - Artist", or (no argument) a radio pick for what is playing."""
     from .models import TidalTrack
 
     if track and track.isdigit():
@@ -431,6 +423,20 @@ def playtest(track, config_path, method):
         if not cands:
             raise click.ClickException("no candidate to test with; give a track id")
         t = rt.catalog.match(cands[0]) or TidalTrack(id=cands[0].tidal_id, title=cands[0].title, artist=cands[0].artist)
+    return t
+
+
+@cli.command()
+@click.argument("track", required=False)
+@click.option("--config", "config_path", type=click.Path(path_type=Path))
+@click.option("--method", type=click.Choice(["auto", "luna", "cdp", "open-url", "open-url-play"]), default="auto", show_default=True)
+def playtest(track, config_path, method):
+    """Try to make TIDAL play a track (id or "Title - Artist") and report what worked."""
+    cfg = _config_from({"config_path": config_path})
+    _require_macos("tidal-shuffle playtest")
+    cfg.player.play_strategy = method
+    rt = _runtime(cfg)
+    t = _resolve_track(track, rt)
     console.print(f"target: {escape(t.label())}  (id {t.id})")
     try:
         ready = rt.player.ensure_ready()
@@ -449,19 +455,34 @@ def playtest(track, config_path, method):
 
 
 @cli.command()
+@click.argument("track", required=False)
 @click.option("--config", "config_path", type=click.Path(path_type=Path))
-def inspect(config_path):
-    """Dump what the TIDAL player page looks like (for fixing selectors)."""
+def inspect(track, config_path):
+    """Dump what the TIDAL player page looks like (for fixing selectors).
+
+    With TRACK (an id or "Title - Artist") it first opens that track's page
+    and reports how the play logic sees it. Paste the output into a bug report.
+    """
     cfg = _config_from({"config_path": config_path})
     _require_macos("tidal-shuffle inspect")
     import json
+    import time
 
     from .tidal.cdp import TidalCdp
 
     cdp = TidalCdp(port=cfg.player.cdp_port, app_path=cfg.player.tidal_app)
     if not cdp.alive():
         raise click.ClickException("TIDAL is not reachable on the debug port; run `tidal-shuffle doctor`")
-    console.print(json.dumps(cdp.inspect(), indent=2), markup=False)
+    tid = None
+    if track:
+        rt = _runtime(cfg)
+        t = _resolve_track(track, rt)
+        rt.close()
+        tid = t.id
+        console.print(f"opening {escape(t.label())} (id {t.id})", highlight=False)
+        cdp.navigate_to_track(tid)
+        time.sleep(4)
+    console.print(json.dumps(cdp.inspect(tid), indent=2), markup=False)
 
 
 @cli.command()

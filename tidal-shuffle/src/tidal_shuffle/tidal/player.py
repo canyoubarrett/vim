@@ -185,7 +185,7 @@ class TidalPlayer:
             method = "cdp"
         if method == "cdp":
             try:
-                out = self.cdp.play_track(track.id, verify_timeout=self.config.verify_seconds)
+                out = self.cdp.play_track(track.id, verify_timeout=self.config.verify_seconds, title=track.title)
             except CdpError as e:
                 out = PlayOutcome(False, "cdp", None, str(e))
                 self._cdp_ok = None

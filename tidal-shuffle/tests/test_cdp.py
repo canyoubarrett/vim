@@ -21,31 +21,32 @@ class FakePage:
         self.times = []
         self.fail_click = False
         self.evals = []
+        self.store = False         # page exposes a Redux store
+        self.store_plays = True    # dispatching ADD_NOW starts the track
+        self.store_calls = []
 
     def evaluate(self, js, timeout=10.0):
         self.evals.append(js)
         if js.strip() == "location.pathname":
             return self.path
-        if "history.pushState" in js:
-            m = re.search(r"const target = '(/track/\d+)'", js)
-            target = m.group(1)
+        tid_m = re.search(r'const ID = "(\d+)"', js)
+        tid = tid_m.group(1) if tid_m else None
+        if "/*ts:navigate*/" in js:
+            target = f"/track/{tid}"
             if self.path == target:
                 return "already"
             self.path = target
             return "pushed"
-        if "rows.some(r => r.querySelector(S.row_play))" in js:
+        if "/*ts:rows_ready*/" in js:
             rows = self.rows.get(self.path, [])
             if not rows:
                 return False
-            m = re.search(r'const want = "(/track/\d+)"', js)
-            if m and not any(f"/track/{r}" == m.group(1) for r in rows):
+            if tid and tid not in rows:
                 return "other"
             return True
-        if "rows.find(r => r.innerHTML.includes(want" in js:
+        if "/*ts:click*/" in js:
             if self.fail_click:
                 return ""
-            m = re.search(r"const want = '/track/(\d+)'", js)
-            tid = m.group(1)
             rows = self.rows.get(self.path, [])
             if tid in rows:
                 self.playing_id, self.playing = tid, True
@@ -60,6 +61,13 @@ class FakePage:
                     "times": self.times, "path": self.path, "hasFooter": True}
         if "const label =" in js:
             return True
+        if "/*ts:store_play*/" in js:
+            if not self.store:
+                return "no-store"
+            self.store_calls.append(tid)
+            if self.store_plays:
+                self.playing_id, self.playing = tid, True
+            return "ok"
         if "buttonLabels" in js:
             return {"path": self.path, "counts": {"row": len(self.rows.get(self.path, []))}}
         raise AssertionError("unexpected js: " + js[:80])
@@ -224,3 +232,53 @@ def test_missing_reply_is_not_resent():
     with pytest.raises(CdpError):
         cdp.click_play_for_track("5")
     assert conn.sent == 1
+
+
+def test_queue_fallback_when_no_play_button():
+    cdp, page, clock = make()
+    page.rows["/track/9"] = ["9"]
+    page.fail_click = True
+    page.store = True
+    out = cdp.play_track("9", verify_timeout=2)
+    assert out.ok and out.method == "queue" and page.store_calls == ["9"]
+    # It worked, so the next track goes to the queue first, without clicking.
+    page.rows["/track/10"] = ["10"]
+    evals = len(page.evals)
+    out = cdp.play_track("10", verify_timeout=2)
+    assert out.ok and out.method == "queue" and page.store_calls == ["9", "10"]
+    assert not any("/*ts:click*/" in js for js in page.evals[evals:])
+
+
+def test_queue_fallback_without_store_is_given_up():
+    cdp, page, clock = make()
+    page.rows["/track/9"] = ["9"]
+    page.fail_click = True
+    out = cdp.play_track("9", verify_timeout=1)
+    assert not out.ok and "no play button" in out.detail
+    stores = sum("/*ts:store_play*/" in js for js in page.evals)
+    cdp.play_track("9", verify_timeout=1)
+    assert sum("/*ts:store_play*/" in js for js in page.evals) == stores  # not asked again
+
+
+def test_queue_that_does_not_take_is_reported():
+    cdp, page, clock = make()
+    page.rows["/track/9"] = ["9"]
+    page.fail_click = True
+    page.store, page.store_plays = True, False
+    out = cdp.play_track("9", verify_timeout=1)
+    assert not out.ok and "queue:" in out.detail and out.method == "queue"
+
+
+def test_footer_without_track_link_matches_by_title():
+    cdp, page, clock = make()
+    page.rows["/track/5"] = ["5"]
+    orig = page.evaluate
+    def evaluate(js, timeout=10.0):
+        r = orig(js, timeout)
+        if isinstance(r, dict) and "hasFooter" in r:
+            r = dict(r, id=None, title="Them Changes")
+        return r
+    page.evaluate = evaluate
+    out = cdp.play_track("5", verify_timeout=2, title="Them Changes")
+    assert out.ok and out.detail == "matched by title"
+    assert not cdp.play_track("5", verify_timeout=1, title="Other Song").ok

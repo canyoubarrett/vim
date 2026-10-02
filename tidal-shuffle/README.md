@@ -139,10 +139,16 @@ The port only listens on your own Mac (127.0.0.1). Set
 like `next` never relaunch TIDAL.
 
 Without the port, Tidal Shuffle falls back to opening the song with
-`tidal://track/<id>` and asks you to press play. `tidal-shuffle playtest`
-shows which method works on your Mac. If TIDAL changes its web player,
-`tidal-shuffle inspect` dumps the player page; the selectors are in
-`src/tidal_shuffle/tidal/cdp.py`.
+`tidal://track/<id>` and asks you to press play.
+
+With the port, a song is started by opening its page and pressing its play
+button (its row in the track list, or the page's own Play button). If no
+button can be found, or pressing it does not start the song, Tidal Shuffle
+asks TIDAL's play queue to play it directly, and keeps using whichever
+worked. `tidal-shuffle playtest "Title - Artist"` shows which method works
+on your Mac. If none does, run `tidal-shuffle inspect "Title - Artist"`: it
+opens that song's page and prints what the play logic sees there (paste it
+into a bug report). The selectors are in `src/tidal_shuffle/tidal/cdp.py`.
 
 **Optional, gapless:** with the community mod
 [TidaLuna](https://github.com/Inrixia/TidaLuna) and its API plugin, Tidal
@@ -206,7 +212,7 @@ pick asked for them.
 | `config init / show / path`     | manage the config file                                    |
 | `now`                           | what each now-playing reader reports                      |
 | `playtest [id or "A - B"]`      | make TIDAL play a track and report which method worked    |
-| `inspect`                       | dump the TIDAL player page                                |
+| `inspect [id or "A - B"]`       | dump the TIDAL player page (optionally a song's page)     |
 
 Commands that read settings take `--config PATH`; `TIDAL_SHUFFLE_CONFIG` sets the default.
 

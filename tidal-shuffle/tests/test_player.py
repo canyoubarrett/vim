@@ -15,7 +15,7 @@ class FakeCdp:
         return self.launch_ok
     def prepare(self, tid, timeout=15.0): return True
     def has_luna(self): return False
-    def play_track(self, tid, verify_timeout=8.0):
+    def play_track(self, tid, verify_timeout=8.0, title=None):
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome

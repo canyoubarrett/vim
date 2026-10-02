@@ -166,6 +166,8 @@ class TidalCdp:
         self._clock = clock
         self.log = log or (lambda m: None)
         self._conn: Any = None
+        self._store_works = False
+        self._store_failures = 0
 
     # -- process / endpoint -------------------------------------------------
     @property
@@ -324,33 +326,94 @@ class TidalCdp:
         return str(self.evaluate("location.pathname") or "")
 
     # -- navigation & playback ------------------------------------------------
-    def navigate_to_track(self, track_id: str, return_status: bool = False):
-        """Route the single-page app to ``/track/<id>`` without reloading."""
-        js = f"""
-        (() => {{
-          const target = '/track/{int(track_id)}';
-          if (location.pathname === target) return 'already';
-          history.pushState({{}}, '', target);
-          window.dispatchEvent(new PopStateEvent('popstate', {{state: {{}}}}));
-          return location.pathname === target ? 'pushed' : 'failed';
+    def _page_js(self, marker: str, track_id: Optional[str], body: str) -> str:
+        """Wrap ``body`` with the helpers every page script shares.
+
+        ``marker`` names the snippet (tests dispatch on it). TIDAL may redirect
+        ``/track/<id>`` to another route, so the path the app lands on after our
+        navigation is remembered in ``window.__tidalShuffleNav`` and counts as
+        "on the track's page" too.
+        """
+        tid = json.dumps(str(int(track_id))) if track_id else "null"
+        return f"""
+        (() => {{ /*ts:{marker}*/
+          const S = {self._js_sel()};
+          const ID = {tid};
+          const want = ID ? '/track/' + ID : null;
+          const pathRe = ID ? new RegExp('/track/' + ID + '(/|$)') : null;
+          const idRe = ID ? new RegExp('(^|[^0-9])' + ID + '([^0-9]|$)') : null;
+          const inChrome = el => !!(el.closest(S.footer) || el.closest(S.controls) || el.closest('footer') || el.closest('nav'));
+          const landed = () => {{
+            if (!ID) return false;
+            if (pathRe.test(location.pathname)) return true;
+            const n = window.__tidalShuffleNav;
+            if (!n || n.id !== ID) return false;
+            if (location.pathname === n.path) return true;
+            if (Date.now() - n.t < 8000) {{ n.path = location.pathname; return true; }}  // the app redirected
+            return false;
+          }};
+          const rows = () => Array.from(document.querySelectorAll(S.row)).filter(r => !inChrome(r));
+          const strong = r => r.innerHTML.includes(want + '"') || r.innerHTML.includes(want + '?') || r.innerHTML.includes(want + '/')
+                         || [r, ...r.querySelectorAll('*')].some(e => Array.from(e.attributes).some(a => a.value === ID || a.value === want));
+          const rowFor = () => {{
+            if (!ID) return null;
+            const rs = rows();
+            return rs.find(strong) || rs.find(r => r.innerHTML.includes(want)) || rs.find(r => idRe.test(r.outerHTML)) || null;
+          }};
+          const playIn = r => r.querySelector(S.row_play) || r.querySelector('button[aria-label^="Play"]')
+                           || Array.from(r.querySelectorAll('[data-test]')).find(e => /(^|-)play(-button)?$/.test(e.getAttribute('data-test')));
+          const isPlayish = el => {{
+            const dt = (el.getAttribute('data-test') || '').toLowerCase();
+            const al = (el.getAttribute('aria-label') || '').trim();
+            const tx = (el.textContent || '').trim();
+            if (/list|queue|back|next|later|pause|speed|mode/.test(dt)) return false;
+            return /(^|-)play(-button|-all|-track)?$/.test(dt) || /^play($|\\s)/i.test(al) || (el.tagName === 'BUTTON' && /^play$/i.test(tx));
+          }};
+          const hero = () => {{
+            const seen = new Set();
+            const sels = [S.hero_play, '[data-test=play-button]', '[data-test*=play]', 'button[aria-label^="Play"]', 'button'];
+            for (const sel of sels) {{
+              for (const el of document.querySelectorAll(sel)) {{
+                if (seen.has(el)) continue;
+                seen.add(el);
+                if (!inChrome(el) && !el.closest(S.row) && isPlayish(el)) return el;
+              }}
+            }}
+            return null;
+          }};
+          {body}
         }})()
         """
+
+    def navigate_to_track(self, track_id: str, return_status: bool = False):
+        """Route the single-page app to ``/track/<id>`` without reloading."""
+        js = self._page_js("navigate", track_id, """
+          const n = window.__tidalShuffleNav;
+          if (pathRe.test(location.pathname) || (n && n.id === ID && location.pathname === n.path)) return 'already';
+          const before = location.pathname;
+          window.__tidalShuffleNav = {id: ID, path: want, t: Date.now()};
+          history.pushState({}, '', want);
+          window.dispatchEvent(new PopStateEvent('popstate', {state: {}}));
+          if (location.pathname === want) return 'pushed';
+          if (location.pathname !== before) {  // the app redirected the track route
+            window.__tidalShuffleNav.path = location.pathname;
+            return 'pushed';
+          }
+          return 'failed';
+        """)
         status = self.evaluate(js)
         return status if return_status else status in ("pushed", "already")
 
     def rows_ready(self, track_id: Optional[str] = None):
-        """``True`` when the track's row is rendered, ``"other"`` when rows are
-        rendered but none mentions the track, ``False`` when nothing is there."""
-        js = f"""
-        (() => {{
-          const S = {self._js_sel()};
-          const rows = Array.from(document.querySelectorAll(S.row));
-          if (!rows.length) return false;
-          const want = {json.dumps('/track/' + str(track_id)) if track_id else 'null'};
-          if (want && !rows.some(r => r.innerHTML.includes(want))) return 'other';
-          return rows.some(r => r.querySelector(S.row_play)) || !!document.querySelector(S.hero_play);
-        }})()
-        """
+        """``True`` when the track's row (or the track page's own play button) is
+        rendered, ``"other"`` when only unrelated rows are, ``False`` otherwise."""
+        js = self._page_js("rows_ready", track_id, """
+          const onPage = landed();
+          if (ID && rowFor()) return true;
+          if (ID && onPage && hero()) return true;
+          if (!ID && (rows().length || hero())) return true;
+          return rows().length ? 'other' : false;
+        """)
         result = self.evaluate(js)
         return result if result in (True, "other") else False
 
@@ -373,35 +436,79 @@ class TidalCdp:
             self._sleep(0.25)
 
     def click_play_for_track(self, track_id: str) -> str:
-        """Click the play button for the track row; returns the method used."""
-        js = f"""
-        (() => {{
-          const S = {self._js_sel()};
-          const want = '/track/{int(track_id)}';
-          const rows = Array.from(document.querySelectorAll(S.row));
-          let row = rows.find(r => r.innerHTML.includes(want + '"') || r.innerHTML.includes(want + '?') || r.innerHTML.includes(want + '/'))
-                 || rows.find(r => r.innerHTML.includes(want));
-          let method = 'row';
-          if (!row && rows.length && location.pathname === want) {{ row = rows[0]; method = 'first-row'; }}
-          if (row) {{
-            const b = row.querySelector(S.row_play);
-            if (b) {{ b.click(); return method; }}
-            const dbl = new MouseEvent('dblclick', {{bubbles: true, cancelable: true, view: window}});
-            row.dispatchEvent(dbl);
+        """Click the play control for the track; returns the method used ('' = none found)."""
+        js = self._page_js("click", track_id, """
+          const row = rowFor();
+          if (row) {
+            const b = playIn(row);
+            if (b) { b.click(); return 'row'; }
+            row.dispatchEvent(new MouseEvent('dblclick', {bubbles: true, cancelable: true, view: window}));
             return 'row-dblclick';
-          }}
-          const hero = document.querySelector(S.hero_play);
-          if (hero && location.pathname === want) {{ hero.click(); return 'hero'; }}
+          }
+          if (!landed()) return '';
+          const h = hero();
+          if (h) { h.click(); return 'hero'; }
+          const rs = rows();
+          if (rs.length && pathRe.test(location.pathname)) {
+            const b = playIn(rs[0]);
+            if (b) b.click(); else rs[0].dispatchEvent(new MouseEvent('dblclick', {bubbles: true, cancelable: true, view: window}));
+            return 'first-row';
+          }
           return '';
-        }})()
-        """
+        """)
+        return str(self.evaluate(js) or "")
+
+    # TIDAL's web player keeps its state in a Redux store; TidaLuna's
+    # MediaItem.play() is a dispatch of playQueue/ADD_NOW. The store is found
+    # through React's fiber tree (the Provider's ``store`` prop).
+    _FIND_STORE = """
+          const findStore = () => {
+            if (window.__tidalShuffleStore) return window.__tidalShuffleStore;
+            const els = [document.getElementById('wimp'), document.getElementById('root'), ...document.querySelectorAll('body > div')];
+            for (const el of els) {
+              if (!el) continue;
+              const key = Object.keys(el).find(k => k.startsWith('__reactContainer$') || k.startsWith('__reactFiber$'));
+              let start = key ? el[key] : (el._reactRootContainer && el._reactRootContainer._internalRoot && el._reactRootContainer._internalRoot.current);
+              const stack = [start];
+              let n = 0;
+              while (stack.length && n < 20000) {
+                const f = stack.pop();
+                n++;
+                if (!f || typeof f !== 'object') continue;
+                const p = f.memoizedProps;
+                const st = p && (p.store || (p.value && p.value.store));
+                if (st && typeof st.dispatch === 'function' && typeof st.getState === 'function') {
+                  window.__tidalShuffleStore = st;
+                  return st;
+                }
+                if (f.sibling) stack.push(f.sibling);
+                if (f.child) stack.push(f.child);
+              }
+            }
+            return null;
+          };
+    """
+
+    def store_play(self, track_id: str) -> str:
+        """Ask TIDAL's own play queue to play the track now. Returns ``'ok'``,
+        ``'no-store'``, ``'no-queue'`` or an error text."""
+        js = self._page_js("store_play", track_id, self._FIND_STORE + """
+          const st = findStore();
+          if (!st) return 'no-store';
+          const s = st.getState() || {};
+          if (!s.playQueue) return 'no-queue';
+          try {
+            st.dispatch({type: 'playQueue/ADD_NOW', payload: {context: {type: 'UNKNOWN'}, mediaItemIds: [Number(ID)], fromIndex: 0}});
+          } catch (e) { return 'error: ' + e; }
+          return 'ok';
+        """)
         return str(self.evaluate(js) or "")
 
     def press(self, control: str) -> bool:
         if control not in ("play", "pause", "next", "previous"):
             raise ValueError(control)
         js = f"""
-        (() => {{
+        (() => {{ /*ts:press*/
           const S = {self._js_sel()};
           const label = {json.dumps(control.capitalize())};
           const b = document.querySelector(S.controls + ' ' + S[{json.dumps(control)}])
@@ -428,30 +535,83 @@ class TidalCdp:
             return False
         return self.wait_for_rows(track_id, timeout)
 
-    def play_track(self, track_id: str, verify_timeout: float = 8.0, prepare_timeout: float = 15.0) -> PlayOutcome:
-        """Make the app play ``track_id`` and confirm it from the footer."""
-        track_id = str(track_id)
-        if not self.prepare(track_id, prepare_timeout):
-            return PlayOutcome(False, "", None, "track page did not load")
-        try:
-            method = self.click_play_for_track(track_id)
-        except CdpError as e:
-            return PlayOutcome(False, "", None, f"click failed: {e}")
-        if not method:
-            return PlayOutcome(False, "", None, "no play button found on the track page")
-        deadline = self._clock() + verify_timeout
+    def _verify(self, track_id: str, title: Optional[str], timeout: float, method: str) -> PlayOutcome:
+        """Wait for the footer to show the track (by id, or by title when the
+        footer carries no track link)."""
+        from ..matching import normalize
+
+        deadline = self._clock() + timeout
         observed: Optional[str] = None
         while self._clock() < deadline:
             try:
                 np = self.now_playing()
             except CdpError:
                 np = None
-            if np is not None:
-                observed = np.track_id
-                if np.track_id == track_id and np.playing is not False:
-                    return PlayOutcome(True, method, observed)
+            if np is not None and np.playing is not False:
+                observed = np.track_id or (f"title:{np.title}" if np.title else None)
+                if np.track_id == track_id:
+                    return PlayOutcome(True, method, np.track_id)
+                if np.track_id is None and title and np.title and normalize(np.title) == normalize(title):
+                    return PlayOutcome(True, method, None, "matched by title")
             self._sleep(0.4)
         return PlayOutcome(False, method, observed, "footer never showed the requested track")
+
+    def _try_store(self, track_id: str, title: Optional[str], verify_timeout: float) -> Optional[PlayOutcome]:
+        if self._store_failures >= 3:
+            return None
+        try:
+            res = self.store_play(track_id)
+        except CdpError as e:
+            res = f"error: {e}"
+        if res != "ok":
+            self.log(f"play queue: {res}")
+            self._store_failures = 3 if res in ("no-store", "no-queue") else self._store_failures + 1
+            return None
+        out = self._verify(track_id, title, verify_timeout, "queue")
+        self._store_failures = 0 if out.ok else self._store_failures + 1
+        self._store_works = out.ok
+        return out
+
+    def play_track(self, track_id: str, verify_timeout: float = 8.0, prepare_timeout: float = 15.0,
+                   title: Optional[str] = None) -> PlayOutcome:
+        """Make the app play ``track_id`` and confirm it from the footer.
+
+        Clicks the track's play button on its page; if that is not possible or
+        does not take, asks TIDAL's play queue directly. Whichever worked last
+        is tried first next time.
+        """
+        track_id = str(track_id)
+        if self._store_works:
+            out = self._try_store(track_id, title, verify_timeout)
+            if out is not None and out.ok:
+                return out
+        problems = []
+        observed: Optional[str] = None
+        tried = ""
+        if self.prepare(track_id, prepare_timeout):
+            try:
+                method = self.click_play_for_track(track_id)
+            except CdpError as e:
+                method = ""
+                problems.append(f"click failed: {e}")
+            if method:
+                out = self._verify(track_id, title, verify_timeout, method)
+                if out.ok:
+                    return out
+                observed, tried = out.observed_id, method
+                problems.append(f"{method}: {out.detail}")
+            elif not problems:
+                problems.append("no play button found on the track page")
+        else:
+            problems.append("track page did not load")
+        if not self._store_works:
+            out = self._try_store(track_id, title, verify_timeout)
+            if out is not None:
+                if out.ok:
+                    return out
+                observed, tried = out.observed_id or observed, tried or "queue"
+                problems.append(f"queue: {out.detail}")
+        return PlayOutcome(False, tried, observed, "; ".join(problems))
 
     # -- TidaLuna (optional client mod) ---------------------------------------
     def has_luna(self) -> bool:
@@ -485,27 +645,56 @@ class TidalCdp:
         return data if isinstance(data, dict) else {}
 
     # -- diagnostics ----------------------------------------------------------
-    def inspect(self) -> dict:
-        """Describe what the player DOM looks like right now (for debugging)."""
-        js = f"""
-        (() => {{
-          const S = {self._js_sel()};
+    def inspect(self, track_id: Optional[str] = None) -> dict:
+        """Describe what the player DOM looks like right now (for debugging).
+
+        With ``track_id`` it also reports how the play logic sees that track's
+        page: the matching row, the play controls it would consider, the store.
+        """
+        js = self._page_js("inspect", track_id, self._FIND_STORE + """
           const attrs = el => Array.from(el.querySelectorAll('[data-test]')).map(e => e.getAttribute('data-test'));
           const uniq = a => Array.from(new Set(a));
+          const clip = (t, n) => (t || '').replace(/<svg[\\s\\S]*?<\\/svg>/g, '<svg/>').replace(/\\s+/g, ' ').slice(0, n);
+          const describe = el => ({
+            tag: el.tagName.toLowerCase(), dataTest: el.getAttribute('data-test'), aria: el.getAttribute('aria-label'),
+            text: clip(el.textContent, 40), inFooter: inChrome(el), inRow: !!el.closest(S.row), cls: clip(el.className && el.className.baseVal === undefined ? el.className : '', 60),
+          });
           const footer = document.querySelector(S.footer);
-          const row = document.querySelector(S.row);
-          const labels = Array.from(document.querySelectorAll('button[aria-label]')).map(b => b.getAttribute('aria-label'));
-          return {{
+          const rs = rows();
+          const row = rowFor();
+          const h = hero();
+          const main = document.querySelector('main') || document.body;
+          let store = null;
+          try {
+            const st = findStore();
+            if (st) {
+              const s = st.getState() || {};
+              store = {keys: Object.keys(s).slice(0, 60), playQueue: s.playQueue ? Object.keys(s.playQueue).slice(0, 30) : null};
+            }
+          } catch (e) { store = {error: String(e)}; }
+          const playish = Array.from(document.querySelectorAll('button, [role=button], [data-test]'))
+            .filter(e => /play/i.test((e.getAttribute('data-test') || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.tagName === 'BUTTON' ? e.textContent : '')))
+            .slice(0, 40).map(describe);
+          return {
             path: location.pathname,
             title: document.title,
+            onTrackPage: landed(),
             counts: Object.fromEntries(Object.entries(S).map(([k, v]) => [k, document.querySelectorAll(v).length])),
+            rowCount: rs.length,
+            trackRowFound: !!row,
+            trackRowHtml: row ? clip(row.outerHTML, 1500) : null,
+            firstRowHtml: !row && rs.length ? clip(rs[0].outerHTML, 1500) : null,
+            heroButton: h ? describe(h) : null,
+            playControls: playish,
+            mainDataTest: uniq(attrs(main)).slice(0, 120),
             footerDataTest: footer ? uniq(attrs(footer)) : null,
             footerText: footer ? (footer.innerText || '').slice(0, 300) : null,
-            firstRowDataTest: row ? uniq(attrs(row)) : null,
-            buttonLabels: uniq(labels).slice(0, 60),
+            buttonLabels: uniq(Array.from(document.querySelectorAll('button[aria-label]')).map(b => b.getAttribute('aria-label'))).slice(0, 80),
+            reactRoot: [document.getElementById('wimp'), document.getElementById('root'), ...document.querySelectorAll('body > div')]
+              .filter(Boolean).map(el => (el.id || el.className || el.tagName) + ':' + Object.keys(el).filter(k => k.startsWith('__react')).map(k => k.split('$')[0]).join(',')).slice(0, 8),
+            store,
             luna: typeof window.luna !== 'undefined',
-          }};
-        }})()
-        """
-        data = self.evaluate(js)
+          };
+        """)
+        data = self.evaluate(js, timeout=20.0)
         return data if isinstance(data, dict) else {"raw": data}
