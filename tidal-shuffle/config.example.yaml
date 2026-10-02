@@ -65,6 +65,7 @@ spotify:
     mute: true              # Spotify is muted while it is harvesting
     restore: true           # and its volume is put back afterwards
     hide_window: true
+    keep_hidden: true       # never show Spotify while it is used; the spotify-ui lookup needs its window, so it is skipped
     quit_after: auto        # quit Spotify after a harvest if Tidal Shuffle opened it
                             # (an open Spotify would capture your media keys)
     max_seconds: 60         # give up on a harvest after this long

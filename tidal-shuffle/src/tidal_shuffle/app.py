@@ -123,8 +123,10 @@ def build_spotify_app(cfg: AppConfig, catalog: Optional[TidalCatalog], api=None,
                OdesliSpotifyIds(OdesliMapper(api_key=app_cfg.odesli_api_key, log=logger), catalog, log=logger)]
     if api is not None:
         lookups.insert(0, SpotifyApiIds(api))
-    ui = SpotifyUI(label_pattern="^" + re.escape(app_cfg.ui_label_prefix) + r"(?P<rest>.+)$",
-                   by_word=app_cfg.ui_label_by, log=logger)
+    ui = None
+    if not app_cfg.keep_hidden:   # the search page has to be on screen to be used
+        ui = SpotifyUI(label_pattern="^" + re.escape(app_cfg.ui_label_prefix) + r"(?P<rest>.+)$",
+                       by_word=app_cfg.ui_label_by, log=logger)
     cache = DiskCache(paths.CONFIG_DIR / "cache" / "spotify_ids.json", ttl=180 * 86400)
     return SpotifyAppSource(app_cfg, runner=default_runner(), log=logger, catalog=catalog,
                             id_lookups=lookups, ui=ui, id_cache=cache)

@@ -37,6 +37,7 @@ class SpotifyAppConfig:
     mute: bool = True            # set Spotify's volume to 0 while harvesting
     restore: bool = True         # put Spotify's volume back afterwards
     hide_window: bool = True     # keep Spotify out of the way when we launch it
+    keep_hidden: bool = True     # hide Spotify the whole time it is used (skips the spotify-ui lookup)
     quit_after: Any = "auto"     # quit Spotify after a harvest: auto (if we launched it) | true | false
     skip_delay: float = 0.0      # extra pause after each skip (gentler on Spotify)
     launch_timeout: float = 25.0 # seconds to wait for Spotify to answer AppleScript
@@ -288,6 +289,7 @@ spotify:
     mute: true              # Spotify is muted while it is harvesting
     restore: true           # and its volume is put back afterwards
     hide_window: true
+    keep_hidden: true       # never show Spotify while it is used; the spotify-ui lookup needs its window, so it is skipped
     quit_after: auto        # quit Spotify after a harvest if Tidal Shuffle opened it
                             # (an open Spotify would capture your media keys)
     max_seconds: 60         # give up on a harvest after this long
@@ -563,7 +565,7 @@ def _build(data: Mapping) -> AppConfig:
             "enabled": _as_bool,
             "harvest": lambda v, n: int(_as_number(v, n, int, 1, 200)),
             "seed_method": lambda v, n: _as_choice(v, n, ("auto", "station", "autoplay")),
-            "mute": _as_bool, "restore": _as_bool, "hide_window": _as_bool,
+            "mute": _as_bool, "restore": _as_bool, "hide_window": _as_bool, "keep_hidden": _as_bool,
             "quit_after": lambda v, n: "auto" if str(v).strip().lower() == "auto" else _as_bool(v, n),
             "skip_delay": lambda v, n: _as_number(v, n, float, 0, 10),
             "launch_timeout": lambda v, n: _as_number(v, n, float, 1, 300),

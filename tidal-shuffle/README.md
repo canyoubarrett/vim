@@ -298,8 +298,13 @@ Commands that read settings take `--config PATH`; `TIDAL_SHUFFLE_CONFIG` sets th
   no track buttons, your Spotify may use other button words (see above).
 * **"macOS denied Automation access to Spotify"**: System Settings →
   Privacy & Security → Automation → your terminal → Spotify.
-* **Spotify pops up**: Tidal Shuffle hides it right after it comes forward.
-  That needs the System Events permission.
+* **Spotify pops up**: with `spotify.app.keep_hidden: true` (the default)
+  a guard hides Spotify within about a tenth of a second whenever it shows
+  up while Tidal Shuffle is using it (or started it), and hands the focus
+  back to the app you were in, so your keys keep working. A Spotify you
+  opened yourself is left alone between harvests. The `spotify-ui` lookup
+  needs Spotify's search page on screen, so it is skipped while Spotify is
+  kept hidden; set `keep_hidden: false` to allow it.
 * **Songs open in TIDAL but do not start**: TIDAL is not reachable on its
   debug port. Let `run` relaunch it, or launch it as shown above.
 * **Nothing is detected as playing**: install `media-control`.

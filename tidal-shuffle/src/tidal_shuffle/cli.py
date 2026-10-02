@@ -211,6 +211,9 @@ def run(dry_run, once, plain, **kwargs):
                       f"{os.environ.get('TERM', '')!s}{', NO_COLOR is set' if os.environ.get('NO_COLOR') else ''}); "
                       "set ui.color: 256 or truecolor to force it[/yellow]")
     controls = _start_controls(cfg, loop, screen)
+    guard = _keep_spotify_hidden(cfg, [s for s in rt.sources if s.name == "spotify-app"])
+    if guard is not None:
+        controls.append(guard)
     import signal
 
     def _stop(signum, frame):  # closing the terminal or `kill` should clean up like Ctrl+C
@@ -244,6 +247,18 @@ def run(dry_run, once, plain, **kwargs):
         for stamp, msg, dim in list(screen.logs)[-12:]:   # what happened last, on the normal screen
             console.print(f"[dim]{stamp}[/dim] {escape(msg)}", highlight=False)
     console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
+
+
+def _keep_spotify_hidden(cfg: AppConfig, spotify_sources: list):
+    """Hide the Spotify app whenever it shows up while Tidal Shuffle is using it."""
+    if not spotify_sources or not cfg.spotify.app.keep_hidden or platform.system() != "Darwin":
+        return None
+    from .activity import is_busy
+    from .spotify_guard import SpotifyGuard
+
+    src = spotify_sources[0]
+    guard = SpotifyGuard(lambda: is_busy() or bool(getattr(src, "_launched_by_us", False)), log=say)
+    return guard if guard.start() else None
 
 
 def _use_color(mode: str) -> None:
@@ -620,7 +635,12 @@ def harvest(title, artist, config_path, limit):
     if not ok:
         raise click.ClickException(reason)
     seed = Seed(title=title, artist=artist)
-    cands = src.candidates([seed], limit)
+    guard = _keep_spotify_hidden(cfg, [src])
+    try:
+        cands = src.candidates([seed], limit)
+    finally:
+        if guard is not None:
+            guard.stop()
     rt.close()
     if seed.spotify_id:
         console.print(f"[dim]found on Spotify as spotify:track:{seed.spotify_id} via {src.last_lookup}[/dim]")

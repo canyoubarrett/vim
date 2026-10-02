@@ -14,8 +14,10 @@ def test_spotify_app_gets_every_lookup_and_shares_the_api_client():
     app, api = sources["spotify-app"], sources["spotify-api"]
     names = [l.name for l in app.id_lookups]
     assert names == ["spotify-api", "listenbrainz", "odesli"]
-    assert app.ui is not None and app.id_cache is not None
+    assert app.ui is None and app.id_cache is not None   # Spotify kept hidden: no visible search page
     assert app.id_lookups[0].api is api  # one client, one token, one cache
+    shown = load_config(overrides={"spotify": {"app": {"keep_hidden": False}}}, env={})
+    assert {s.name: s for s in build_sources(shown, None)}["spotify-app"].ui is not None
     api.find_track = lambda seed: {"id": "sp1"}
     assert app.id_lookups[0].lookup(Seed("T", "A")) == "sp1"
 
