@@ -1,0 +1,81 @@
+# Tidal Shuffle configuration. Copy to ~/.config/tidal-shuffle/config.yaml
+# Every key is optional; the values shown are the defaults unless noted.
+
+# Recommendation sources, in priority order. The first source that returns
+# candidates wins, unless shuffle.blend is true (then they are merged).
+#   spotify-app  - drives the Spotify desktop app on this Mac via AppleScript.
+#                  No API key needed; Spotify must be installed and logged in.
+#   spotify-api  - Spotify Web API (needs client_id/client_secret below).
+#   lastfm       - Last.fm track similarity (needs lastfm.api_key).
+#   deezer       - Deezer's public, keyless track/artist radio.
+#   tidal-radio  - TIDAL's own track radio (always available once logged in).
+sources:
+  - spotify-app
+  - spotify-api
+  - lastfm
+  - deezer
+  - tidal-radio
+
+shuffle:
+  strategy: weighted        # top | weighted | random | discovery
+  blend: false              # merge candidates from every available source
+  candidates: 30            # candidates to request from each source
+  avoid_repeats_for: 200    # never replay a song picked in the last N picks ...
+  avoid_repeats_days: 7     # ... or in the last N days
+  artist_cooldown: 5        # don't repeat an artist within N picks
+  allow_seed_artist: false  # may the next song be by the artist now playing?
+  seed: current             # current | anchor | window (see README)
+  lookahead: 3              # how many backup picks to keep ready
+  min_duration: 60          # seconds; skips intros/interludes
+  max_duration: 900
+  allow_explicit: true
+
+player:
+  nowplaying_backend: auto  # auto | media-control | nowplaying-cli
+  handoff_seconds: 2.0      # start the next song this many seconds before the end
+  prepare_seconds: 10.0     # open the next song's page this many seconds before the end
+  poll_interval: 2.0        # seconds between now-playing checks
+  near_end_poll_interval: 0.4
+  plan_after_seconds: 4.0   # wait this long into a song before planning the next
+  play_strategy: auto       # auto | luna | cdp | open-url | open-url-play
+  verify_seconds: 8.0       # how long to wait for TIDAL to confirm the new song
+  cdp_port: 9222            # TIDAL is launched with --remote-debugging-port=<this>
+  tidal_app: /Applications/TIDAL.app
+  auto_relaunch: true       # relaunch TIDAL with the debug port if it lacks it
+  luna_port: 24123          # TidaLuna API plugin port (optional client mod)
+
+spotify:
+  client_id: ""             # optional; from https://developer.spotify.com/dashboard
+  client_secret: ""
+  market: US
+  app:
+    enabled: true
+    harvest: 25             # upcoming songs to read from Spotify per seed
+    seed_method: auto       # auto | station | autoplay
+    mute: true
+    restore: true
+    hide_window: true
+    quit_after: false
+    skip_delay: 0.7
+
+lastfm:
+  api_key: ""               # free key: https://www.last.fm/api/account/create
+  expand_similar_artists: true
+
+deezer:
+  enabled: true
+
+tidal:
+  session_file: ~/.config/tidal-shuffle/tidal_session.json
+  radio_limit: 50
+  match_threshold: 0.72
+
+# Presets are named bundles of the settings above. `tidal-shuffle presets`
+# lists the built-in ones; add your own here.
+presets:
+  my-evening:
+    description: "Mellow, mostly new-to-me"
+    shuffle:
+      strategy: discovery
+      artist_cooldown: 8
+    sources: [lastfm, deezer, tidal-radio]
