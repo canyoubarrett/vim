@@ -78,7 +78,10 @@ simply follows your choice.
 [Catppuccin](https://catppuccin.com) colours (Mocha; `ui.theme: macchiato`,
 `frappe` or `latte` for the other flavors):
 
-* at the top, the song playing, a progress bar, and the next pick;
+* at the top, the album cover (drawn with half-block characters, cached in
+  `~/.config/tidal-shuffle/cache/art`; `ui.artwork: false` turns it off),
+  the song playing with a ▶ PLAYING / ⏸ PAUSED badge, a progress bar, the
+  next pick, and the flow with its target energy as a meter;
 * on the left, the Alter Era logo, floating: it bobs, drifts and tilts, its
   colour breathes, and its shadow shrinks as it rises. It is traced from the
   vector original (`assets/alter-era.svg`) into braille at whatever size the
@@ -97,7 +100,20 @@ simply follows your choice.
   `~/.config/tidal-shuffle/cache/lyrics.json`. A song without lyrics gives
   the logo the whole width, and so does `l`; a narrow window gives the
   lyrics the whole width;
-* at the bottom, the log and the keys.
+* in a wide window (130 columns or more), an **Up next** card on the right:
+  the pick and its backups with their energy, and what played recently;
+* at the bottom, the log and a row of key chips, which can be clicked.
+
+**Presets menu.** Press `p` (or click the `p presets` chip) to open the
+preset menu over the logo and lyrics. Presets are grouped (energy & sound,
+how picks are chosen, sources, Spotify tuning, then your own), each with its
+flow and pick style and a one-line description; ● marks the one in use.
+Move with ↑ ↓ or the mouse wheel and apply with Enter, or just click one.
+The switch happens straight away: the next song is chosen again with the
+new preset (unless it is already starting), and the header shows the new
+preset's name. Esc or `p` closes the menu. Clicking needs mouse reporting,
+which is on by default (`ui.mouse: false` turns it off); to select text
+in the window while it is on, hold Option (iTerm2) or Fn (Terminal).
 
 `tidal-shuffle run --plain` (or `ui.screen: plain`) keeps the scrolling log
 instead. `ui.logo_file` points at your own logo, an `.svg` (paths with
@@ -112,6 +128,7 @@ tune the rest.
 | `n` (or ⏭) | skip to a fresh pick (chosen in the background if none is ready; the other keys keep working) |
 | `b` (or ⏮) | TIDAL's previous track |
 | `f` | next shuffle flow (radio → rising → falling → steady → soundscape → vibe) |
+| `p` | open / close the presets menu (↑ ↓ or wheel, Enter or click to apply, Esc to close) |
 | `l` | logo alone / logo and lyrics |
 | `q` | stop Tidal Shuffle |
 | `?` | list the keys |
@@ -294,7 +311,8 @@ flags too: `--strategy`, `--artist-cooldown`, `--allow-seed-artist`,
   API only)
 * `candidates`, `lookahead`, `min_duration`, `max_duration`, `allow_explicit`
 
-Presets bundle these. `tidal-shuffle presets` lists `balanced`, `familiar`,
+Presets bundle these; pick one with `--preset NAME`, or while running from
+the presets menu (`p`). `tidal-shuffle presets` lists `balanced`, `familiar`,
 `discovery`, `wander`, `anchor`, `spotify-only`, `lastfm-only`,
 `tidal-only` and the Spotify API tuning presets. Add your own under
 `presets:`.

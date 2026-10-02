@@ -47,7 +47,7 @@ def test_terminal_bundle_id():
     assert terminal_bundle_id({}) is None
 
 
-def test_key_reader_maps_keys_and_ignores_escape_sequences():
+def test_key_reader_maps_keys_and_arrows():
     master, slave = os.openpty()
     got = []
     done = threading.Event()
@@ -66,7 +66,7 @@ def test_key_reader_maps_keys_and_ignores_escape_sequences():
         reader.stop()
         os.close(master)
         os.close(slave)
-    assert got == ["playpause", "next", "previous", "help", "quit"]
+    assert got == ["playpause", "next", "up", "previous", "help", "quit"]
 
 
 def test_key_reader_needs_a_terminal(tmp_path):
@@ -75,3 +75,50 @@ def test_key_reader_needs_a_terminal(tmp_path):
         assert KeyReader(lambda c: None, fd=f.fileno()).start() is False
     finally:
         f.close()
+
+
+def test_parse_input_arrows_enter_escape_and_mouse():
+    from tidal_shuffle.controls import parse_input
+
+    cmds, rest = parse_input("\x1b[A\x1b[B\x1bOAp\r\x1b[<0;12;5M\x1b[<0;12;5m\x1b[<64;3;3M\x1b[<65;3;3M\x1b[<2;1;1M")
+    assert cmds == ["up", "down", "up", "presets", "enter", "click:12:5", "wheel-up", "wheel-down"]
+    assert rest == ""
+
+
+def test_parse_input_keeps_an_unfinished_sequence():
+    from tidal_shuffle.controls import parse_input
+
+    assert parse_input("n\x1b") == (["next"], "\x1b")
+    assert parse_input("\x1b[<0;1") == ([], "\x1b[<0;1")
+    assert parse_input("\x1b[<0;1" + ";2M") == (["click:1:2"], "")
+    assert parse_input("\x1bq") == (["escape", "quit"], "")
+
+
+def test_key_reader_lone_escape_is_the_escape_key():
+    import os
+    import threading
+
+    from tidal_shuffle.controls import KeyReader
+
+    master, slave = os.openpty()
+    got = []
+    done = threading.Event()
+
+    def on(cmd):
+        got.append(cmd)
+        if cmd == "quit":
+            done.set()
+
+    reader = KeyReader(on, fd=slave)
+    assert reader.start()
+    try:
+        os.write(master, b"\x1b")
+        import time
+        time.sleep(0.3)
+        os.write(master, b"\x1b[<0;4;2Mq")
+        assert done.wait(3)
+    finally:
+        reader.stop()
+        os.close(master)
+        os.close(slave)
+    assert got == ["escape", "click:4:2", "quit"]

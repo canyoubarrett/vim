@@ -63,6 +63,7 @@ class ShuffleLoop:
         sleep: Callable[[float], None] = time.sleep,
         background: bool = False,
         timing_path: Optional[Path] = None,
+        apply_preset: Optional[Callable[[str], str]] = None,
     ):
         """``background=True`` plans on a worker thread so a slow source (the
         Spotify app harvest can take 30 s or more) never delays a hand-off."""
@@ -76,6 +77,7 @@ class ShuffleLoop:
         self._wall = wall
         self._sleep = sleep
         self.state = LoopState()
+        self.apply_preset = apply_preset      # name -> log line; switches presets while running
         self._announced_idle = False
         self.background = background
         self._closed = False
@@ -552,6 +554,10 @@ class ShuffleLoop:
             self.toggle_pause()
         elif command == "flow":
             self.next_flow()
+        elif command.startswith("preset:"):
+            self.switch_preset(command[len("preset:"):])
+        elif command == "replan":
+            self.replan()
         elif command == "next":
             self.request_skip(dry_run=dry_run)
         elif command == "previous":
@@ -565,6 +571,25 @@ class ShuffleLoop:
         shuffle = self.config.shuffle
         shuffle.flow = FLOWS[(FLOWS.index(shuffle.flow) + 1) % len(FLOWS)] if shuffle.flow in FLOWS else FLOWS[0]
         self.log(f"flow: {shuffle.flow} — {FLOW_HELP[shuffle.flow]}")
+        self.replan()
+        return shuffle.flow
+
+    def switch_preset(self, name: str) -> None:
+        """Apply a preset picked in the full-screen view, then choose the next song with it."""
+        if self.apply_preset is None:
+            self.log("⚠ presets can only be switched while running")
+            return
+        try:
+            msg = self.apply_preset(name)
+        except Exception as e:
+            self.log(f"⚠ preset {name}: {e}")
+            return
+        if msg:
+            self.log(msg)
+        self.replan()
+
+    def replan(self) -> None:
+        """Drop the next pick (unless it is already on its way) and choose it again."""
         st = self.state
         if not st.handed_off and st.queued is None:
             st.plan = None            # choose the next song again, the new way
@@ -573,7 +598,6 @@ class ShuffleLoop:
             st.planning = None
             if st.current is not None:
                 self.request_plan()
-        return shuffle.flow
 
     def request_skip(self, dry_run: bool = False) -> None:
         """Skip to a fresh pick without ever blocking the keys: play the pick that

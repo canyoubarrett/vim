@@ -34,13 +34,41 @@ from rich.layout import Layout
 from rich.panel import Panel
 from rich.segment import Segment
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 
 from .lyrics import Lyrics, LyricsService
 from .theme import Theme, theme as make_theme
 from .visualizer import LogoScene, lerp
 
-KEYS_LINE = "space play/pause · n next pick · f flow · l lyrics · q quit"
+KEYS_LINE = "space play/pause · n next pick · f flow · p presets · l lyrics · q quit"
+
+# toolbar chips: (key, label, action); actions "cmd:<loop command>" or "ui:<screen action>"
+CHIPS = [("space", "play/pause", "cmd:playpause"), ("n", "next", "cmd:next"), ("f", "flow", "cmd:flow"),
+         ("p", "presets", "ui:presets"), ("l", "lyrics", "ui:view"), ("q", "quit", "cmd:quit")]
+HEADER_H = 7
+
+# the preset menu's sections, in order; presets of your own come last
+PRESET_GROUPS = [
+    ("Energy & sound", ("radio", "warm-up", "wind-down", "steady", "soundscape", "vibe", "chill")),
+    ("How picks are chosen", ("balanced", "familiar", "discovery", "wander", "anchor")),
+    ("Sources", ("lastfm-only", "spotify-only", "tidal-only")),
+    ("Spotify tuning", ("late-night-drive", "workout")),
+]
+
+
+def preset_sections(names) -> list:
+    """``[(section, [names])]`` for the preset menu, in display order."""
+    left = list(names)
+    out = []
+    for label, members in PRESET_GROUPS:
+        group = [n for n in members if n in left]
+        if group:
+            out.append((label, group))
+            left = [n for n in left if n not in group]
+    if left:
+        out.append(("Your presets", left))
+    return out
 
 _STYLES: dict = {}
 
@@ -250,11 +278,13 @@ def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[fl
 
 
 class ShuffleTUI:
-    """State and rendering for the full-screen view."""
+    """State and rendering for the full-screen view; also routes keys and clicks."""
 
     def __init__(self, loop, config, lyrics: Optional[LyricsService] = None, scene: Optional[LogoScene] = None,
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
-                 theme: Optional[Theme] = None):
+                 theme: Optional[Theme] = None, artwork=None, history=None,
+                 post: Optional[Callable[[str], None]] = None,
+                 presets: Optional[Callable[[], dict]] = None):
         self.loop = loop
         self.config = config
         self.lyrics = lyrics
@@ -262,6 +292,10 @@ class ShuffleTUI:
         if scene is not None:
             scene.logo, scene.glow, scene.shadow, scene.bg = self.th.logo, self.th.logo_glow, self.th.shadow, self.th.bg
         self.scene = scene
+        self.artwork = artwork
+        self.history = history if history is not None else getattr(loop, "history", None)
+        self.post = post or getattr(loop, "post", None) or (lambda cmd: None)
+        self.presets = presets or (lambda: dict(getattr(config, "presets", None) or {}))
         self._clock = clock
         self._wall = wall
         self.logs: deque = deque(maxlen=400)
@@ -269,6 +303,9 @@ class ShuffleTUI:
         self.view = "auto"           # auto: logo + lyrics | logo: the logo alone
         self._estimate_key = None
         self._estimate = None
+        self.menu_open = False
+        self.menu_cursor = 0
+        self._hits: list = []        # (row, col_from, col_to, action), rebuilt on every render
 
     # -- inputs ------------------------------------------------------------------
     def log(self, msg: str, dim: bool = False) -> None:
@@ -278,6 +315,70 @@ class ShuffleTUI:
     def toggle_view(self) -> None:
         self.view = "logo" if self.view == "auto" else "auto"
         self.log("showing the logo" if self.view == "logo" else "showing the lyrics")
+
+    def _preset_names(self) -> list:
+        """Preset names in menu order (the cursor walks this list)."""
+        return [n for _, group in preset_sections(self.presets()) for n in group]
+
+    def open_menu(self) -> None:
+        names = self._preset_names()
+        current = getattr(self.config, "preset", None)
+        self.menu_cursor = names.index(current) if current in names else 0
+        self.menu_open = True
+
+    def choose(self, name: str) -> None:
+        """Apply a preset: the loop switches to it and chooses the next song again."""
+        self.menu_open = False
+        self.post(f"preset:{name}")
+
+    def act(self, action: str) -> None:
+        kind, _, arg = action.partition(":")
+        if kind == "cmd":
+            self.post(arg)
+        elif kind == "ui" and arg == "presets":
+            self.menu_open = False if self.menu_open else (self.open_menu() or True)
+        elif kind == "ui" and arg == "view":
+            self.toggle_view()
+        elif kind == "preset":
+            self.choose(arg)
+        elif kind == "menu" and arg == "close":
+            self.menu_open = False
+
+    def handle_input(self, cmd: str) -> bool:
+        """Keys and clicks the screen handles itself; False passes ``cmd`` on to the loop."""
+        if cmd.startswith("click:"):
+            try:
+                _, x, y = cmd.split(":")
+                col, row = int(x) - 1, int(y) - 1
+            except ValueError:
+                return True
+            for r, c0, c1, action in list(self._hits):
+                if r == row and c0 <= col < c1:
+                    self.act(action)
+                    break
+            return True
+        if cmd in ("presets",):
+            self.act("ui:presets")
+            return True
+        if cmd == "view":
+            self.toggle_view()
+            return True
+        if self.menu_open:
+            names = self._preset_names()
+            if cmd in ("up", "wheel-up"):
+                self.menu_cursor = max(0, self.menu_cursor - 1)
+            elif cmd in ("down", "wheel-down"):
+                self.menu_cursor = min(max(0, len(names) - 1), self.menu_cursor + 1)
+            elif cmd == "enter" and names:
+                self.choose(names[min(self.menu_cursor, len(names) - 1)])
+            elif cmd in ("escape", "quit"):
+                self.menu_open = False
+            elif cmd in ("left", "right"):
+                pass
+            else:
+                return False          # play/pause, next... still work with the menu open
+            return True
+        return cmd in ("up", "down", "left", "right", "enter", "escape", "wheel-up", "wheel-down")
 
     # -- playback state ------------------------------------------------------------
     def position(self) -> tuple[Optional[float], Optional[float], Optional[bool]]:
@@ -302,63 +403,132 @@ class ShuffleTUI:
             return None
         return self.lyrics.get(cur.title, cur.artist, cur.album, cur.duration, cur.tidal_id)
 
-    # -- pieces ---------------------------------------------------------------------
-    def _panel(self, body, title: str, title_color=None, subtitle: str = "", padding=(0, 1)) -> Panel:
+    # -- small pieces ------------------------------------------------------------------
+    def _panel(self, body, title, title_color=None, subtitle: str = "", padding=(0, 1)) -> Panel:
         th = self.th
-        return Panel(body,
-                     title=Text(f" {title} ", style(title_color or th.title, True)) if title else None,
-                     title_align="left",
+        if isinstance(title, str):
+            title = Text(f" {title} ", style(title_color or th.title, True)) if title else None
+        return Panel(body, title=title, title_align="left",
                      subtitle=Text(f" {subtitle} ", style(th.faint)) if subtitle else None, subtitle_align="right",
                      border_style=style(th.border, False, th.bg), style=style(th.text, False, th.bg),
                      padding=padding)
 
+    def gradient_text(self, text: str, colors: list, bold: bool = True) -> Text:
+        out = Text()
+        n = max(1, len(text) - 1)
+        for i, ch in enumerate(text):
+            t = i / n * (len(colors) - 1)
+            k = min(len(colors) - 2, int(t))
+            out.append(ch, style(lerp(colors[k], colors[k + 1], t - k), bold))
+        return out
+
+    def meter(self, value: float, cells: int = 10) -> Text:
+        """An energy meter ▰▰▰▱▱ from green through yellow and peach to red."""
+        p = self.th.p
+        stops = [p["green"], p["yellow"], p["peach"], p["red"]]
+        filled = int(round(max(0.0, min(1.0, value)) * cells))
+        out = Text()
+        for i in range(cells):
+            if i < filled:
+                t = i / max(1, cells - 1) * (len(stops) - 1)
+                k = min(len(stops) - 2, int(t))
+                out.append("▰", style(lerp(stops[k], stops[k + 1], t - k)))
+            else:
+                out.append("▱", style(p["surface2"]))
+        return out
+
+    def progress(self, pos: Optional[float], duration: Optional[float], width: int) -> Text:
+        th, p = self.th, self.th.p
+        left, right = fmt_time(pos), fmt_time(duration)
+        bar_w = max(8, width - len(left) - len(right) - 2)
+        frac = (pos / duration) if (pos is not None and duration) else 0.0
+        done = int(bar_w * max(0.0, min(1.0, frac)))
+        out = Text(left + " ", style(th.subtle))
+        stops = [p["lavender"], p["mauve"], p["pink"]]
+        for i in range(done):
+            t = i / max(1, bar_w - 1) * (len(stops) - 1)
+            k = min(len(stops) - 2, int(t))
+            out.append("━", style(lerp(stops[k], stops[k + 1], t - k)))
+        out.append("●", style(th.knob, True))
+        out.append("─" * max(0, bar_w - done - 1), style(th.bar_rest))
+        out.append(" " + right, style(th.subtle))
+        return out
+
+    def art(self, rows: int):
+        """The cover of the song playing (or a placeholder), ``rows`` tall and square."""
+        from .artwork import placeholder
+
+        w = rows * 2
+        p = self.th.p
+        cur = self.loop.state.current
+        img = None
+        if cur is not None and self.artwork is not None:
+            img = self.artwork.get(f"{cur.artist}|{cur.title}", cur.tidal_id, cur.title, cur.artist)
+        if img is None or img == "pending":
+            grid = placeholder(w, rows, p["mauve"], p["blue"], p["crust"])
+        else:
+            grid = self.artwork.cells(f"{cur.artist}|{cur.title}", img, w, rows)
+        return GridView(lambda _w, _h: grid), w
+
+    # -- regions ---------------------------------------------------------------------------
     def header(self, width: int) -> Panel:
-        th = self.th
+        th, p = self.th, self.th.p
         st = self.loop.state
         cur = st.current
         pos, duration, playing = self.position()
+        rows = HEADER_H - 2
+        art, art_w = self.art(rows)
+        info_w = max(20, width - 4 - art_w - 2)
         lines = Text()
         if cur is None:
             lines.append("waiting for TIDAL to play something…", style(th.subtle))
+            lines.append("\n\n\n")
+        else:
+            badge = " ⏸ PAUSED " if playing is False else " ▶ PLAYING "
+            title = cur.title[:max(4, info_w - len(badge) - 1)]
+            lines.append(title, style(th.text, True))
+            lines.append(" " * max(1, info_w - len(title) - len(badge)))
+            lines.append(badge, style(p["crust"], True, p["yellow"] if playing is False else p["green"]))
+            lines.append("\n")
+            sub = cur.artist + (f"  ·  {cur.album}" if cur.album else "")
+            lines.append(cur.artist[:info_w], style(p["subtext1"]))
+            if cur.album and len(sub) <= info_w:
+                lines.append(f"  ·  {cur.album}", style(th.faint))
             lines.append("\n\n")
-        else:
-            lines.append("⏸ " if playing is False else "▶ ", style(th.paused if playing is False else th.playing, True))
-            lines.append(cur.title, style(th.text, True))
-            lines.append("  —  ", style(th.faint))
-            lines.append(cur.artist, style(th.text))
-            if cur.album:
-                lines.append(f"   {cur.album}", style(th.subtle))
-            lines.append("\n")
-            left, right = fmt_time(pos), fmt_time(duration)
-            bar_w = max(10, width - 6 - len(left) - len(right) - 2)
-            frac = (pos / duration) if (pos is not None and duration) else 0.0
-            done = int(bar_w * max(0.0, min(1.0, frac)))
-            lines.append(left + " ", style(th.subtle))
-            lines.append("━" * done, style(th.bar))
-            lines.append("●", style(th.knob, True))
-            lines.append("─" * max(0, bar_w - done - 1), style(th.bar_rest))
-            lines.append(" " + right, style(th.subtle))
-            lines.append("\n")
+            lines.append_text(self.progress(pos, duration, info_w))
+        lines.append("\n")
+        # next pick, and the flow with its target energy
         nxt = st.plan.primary if st.plan is not None else None
-        lines.append("next ▸ ", style(th.faint))
-        if st.handed_off and st.expected is not None:
-            lines.append(st.expected.track.label(), style(th.text))
-            lines.append("  · starting", style(th.subtle))
-        elif nxt is not None:
-            lines.append(nxt.track.label(), style(th.text))
-            lines.append(f"  · {nxt.source}", style(th.subtle))
-            energy = nxt.candidate.extra.get("energy") if nxt.candidate.extra else None
-            if energy is not None:
-                lines.append(f"  · energy {energy:.2f}", style(th.subtle))
-        elif st.planning is not None or (cur is not None and st.plan is None):
-            lines.append("choosing…", style(th.subtle))
-        else:
-            lines.append("—", style(th.subtle))
         flow = self.config.shuffle.flow
-        target = st.plan.flow_target if st.plan is not None and getattr(st.plan, "flow_target", None) is not None else None
-        subtitle = (f"{flow}" + (f" → energy {target:.2f}" if target is not None and flow != "radio" else "")
-                    + f" · {self.config.shuffle.strategy} · {st.picks_played} picks")
-        return self._panel(lines, "Tidal Shuffle", subtitle=subtitle)
+        target = getattr(st.plan, "flow_target", None) if st.plan is not None else None
+        right = Text()
+        right.append(f"{flow}", style(p["teal"], True))
+        if target is not None and flow != "radio":
+            right.append("  energy ", style(th.faint))
+            right.append_text(self.meter(target, 8))
+        left = Text("next ▸ ", style(th.faint))
+        if st.handed_off and st.expected is not None:
+            left.append(st.expected.track.label(), style(th.text))
+            left.append("  starting…", style(th.subtle))
+        elif nxt is not None:
+            left.append(nxt.track.label(), style(th.text))
+        elif st.planning is not None or (cur is not None and st.plan is None):
+            left.append("choosing…", style(th.subtle))
+        else:
+            left.append("—", style(th.subtle))
+        room = info_w - right.cell_len - 1
+        if left.cell_len > room:
+            left.truncate(max(8, room), overflow="ellipsis")
+        lines.append_text(left)
+        lines.append(" " * max(1, info_w - left.cell_len - right.cell_len))
+        lines.append_text(right)
+        grid = Table.grid(padding=(0, 2), expand=True)
+        grid.add_column(width=art_w, no_wrap=True)
+        grid.add_column(ratio=1)
+        grid.add_row(art, lines)
+        title = self.gradient_text(" Tidal Shuffle ", [p["mauve"], p["pink"], p["peach"]])
+        subtitle = f"{self.config.preset or 'no preset'} · {self.config.shuffle.strategy} · {st.picks_played} picks"
+        return self._panel(grid, title, subtitle=subtitle)
 
     def logo_panel(self, caption: str) -> Panel:
         _, _, playing = self.position()
@@ -382,10 +552,101 @@ class ShuffleTUI:
         th = self.th
         return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th)), title, padding=(0, 0))
 
-    def body(self, width: int):
-        """Logo and lyrics side by side; the logo alone when there are none."""
+    def up_next_panel(self) -> Panel:
+        """The pick and its backups, then what played recently."""
+        th, p = self.th, self.th.p
+        st = self.loop.state
+        text = Text(no_wrap=True, overflow="ellipsis")
+        picks = list(st.plan.picks) if st.plan is not None else []
+        if not picks:
+            text.append("choosing…\n" if st.current is not None else "—\n", style(th.subtle))
+        for i, pick in enumerate(picks[:3]):
+            marker, color = ("▸ ", th.text) if i == 0 else ("  ", th.subtle)
+            text.append(marker, style(p["mauve"], True))
+            text.append(pick.track.title + "\n", style(color, i == 0))
+            text.append("  " + pick.track.artist + "\n", style(th.faint if i else p["subtext1"]))
+            energy = pick.candidate.extra.get("energy") if pick.candidate.extra else None
+            text.append("  " + pick.source, style(th.faint))
+            if energy is not None:
+                text.append("  ")
+                text.append_text(self.meter(energy, 6))
+            text.append("\n\n" if i == 0 else "\n")
+        text.append("\nRECENTLY PLAYED\n", style(th.faint, True))
+        recent = self.history.recent(7) if self.history is not None else []
+        cur = st.current
+        for e in reversed(recent):
+            if cur is not None and e.title == cur.title and e.artist == cur.artist:
+                continue
+            icon, color = ("✓ ", p["green"]) if e.source and e.source != "tidal" else ("· ", th.faint)
+            text.append(icon, style(color))
+            text.append(f"{e.title}", style(th.subtle))
+            text.append(f" — {e.artist}\n", style(th.faint))
+        return self._panel(text, "Up next")
+
+    def presets_panel(self, height: int, top_row: int) -> Panel:
+        """The preset menu, in sections; records where each preset is drawn so clicks find it."""
+        th, p = self.th, self.th.p
+        presets = self.presets()
+        names = self._preset_names()
+        current = getattr(self.config, "preset", None)
+        self.menu_cursor = max(0, min(self.menu_cursor, len(names) - 1))
+        # one display row per section label (with a gap before it) and per preset
+        rows: list = []
+        for label, group in preset_sections(presets):
+            if rows:
+                rows.append(("gap", ""))
+            rows.append(("label", label))
+            rows.extend(("item", n) for n in group)
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append("↑↓ / wheel move · enter / click apply · esc close   ", style(th.faint))
+        text.append("● ", style(p["green"], True))
+        text.append("in use\n\n", style(th.faint))
+        room = max(1, height - 2 - 2)                    # panel borders, hint lines
+        at = next((i for i, r in enumerate(rows) if r == ("item", names[self.menu_cursor])), 0) if names else 0
+        first = min(max(0, at - room // 2), max(0, len(rows) - room))
+        if first and rows[first - 1][0] == "label":
+            first -= 1                                   # keep a section's label with its first preset
+        hits = []
+        name_w = max([len(n) for n in names] + [8]) + 2
+        tag_w = 22
+        for i, (kind, value) in enumerate(rows[first:first + room]):
+            if kind == "gap":
+                text.append("\n")
+                continue
+            if kind == "label":
+                text.append(f"  {value.upper()}\n", style(p["overlay1"], True))
+                continue
+            name = value
+            preset = presets.get(name) or {}
+            desc = str(preset.get("description", ""))
+            shuffle = preset.get("shuffle") or {}
+            tags = " ".join(str(t) for t in (shuffle.get("flow"), shuffle.get("strategy")) if t)
+            if not tags and preset.get("sources"):
+                tags = "+".join(preset["sources"])
+            tags = tags if len(tags) < tag_w - 1 else tags[:tag_w - 2] + "…"
+            mark = "● " if name == current else "  "
+            if name == names[self.menu_cursor]:
+                sel = style(th.current_fg, True, th.current_bg)
+                text.append(f" ▸{mark}{name.ljust(name_w)}{tags.ljust(tag_w)}{desc} \n", sel)
+            else:
+                text.append("  ")
+                text.append(mark, style(p["green"], True))
+                text.append(name.ljust(name_w), style(th.text, True))
+                text.append(tags.ljust(tag_w), style(p["teal"]))
+                text.append(desc + " \n", style(th.subtle))
+            hits.append((top_row + 1 + 2 + i, 0, 10_000, f"preset:{name}"))
+        self._menu_hits = hits
+        return self._panel(text, "Presets", subtitle="p or esc to close")
+
+    def body(self, width: int, height: int = 0, top_row: int = HEADER_H):
+        """Logo and lyrics side by side (and Up next when there is room); the logo
+        alone when there are no lyrics; the preset menu when it is open."""
+        if self.menu_open:
+            return self.presets_panel(height, top_row)
         lyr = self.current_lyrics() if self.view == "auto" else None
-        if not (isinstance(lyr, Lyrics) and lyr.lines):
+        have = isinstance(lyr, Lyrics) and bool(lyr.lines)
+        side = width >= 130
+        if not have:
             if self.loop.state.current is None:
                 caption = "Alter Era"
             elif self.view == "logo":
@@ -396,36 +657,88 @@ class ShuffleTUI:
                 caption = "Alter Era · instrumental"
             else:
                 caption = "Alter Era · no lyrics for this song"
-            return self.logo_panel(caption)
+            main = self.logo_panel(caption)
+            if not side:
+                return main
+            row = Layout()
+            row.split_row(Layout(main, ratio=1), Layout(self.up_next_panel(), size=40))
+            return row
         if width < 90 or self.scene is None:
             return self.lyrics_panel(lyr)          # narrow window: the lyrics get the room
         row = Layout()
-        row.split_row(Layout(self.logo_panel("Alter Era"), ratio=2), Layout(self.lyrics_panel(lyr), ratio=3))
+        parts = [Layout(self.logo_panel("Alter Era"), ratio=2), Layout(self.lyrics_panel(lyr), ratio=3)]
+        if side:
+            parts.append(Layout(self.up_next_panel(), size=40))
+        row.split_row(*parts)
         return row
+
+    def log_line(self, msg: str, dim: bool) -> Text:
+        """A log line with its leading icon coloured by kind."""
+        p, th = self.th.p, self.th
+        icons = {"→": p["blue"], "✓": p["green"], "⚠": p["peach"], "⏭": p["sapphire"], "▶": p["green"],
+                 "⏸": p["yellow"], "♫": p["mauve"], "⏮": p["sapphire"]}
+        text = Text()
+        head = msg[:1]
+        if head in icons:
+            text.append(head, style(icons[head], True))
+            msg = msg[1:]
+        elif msg.startswith("flow:"):
+            text.append("flow:", style(p["teal"], True))
+            msg = msg[5:]
+        text.append(msg, style(th.past if dim else th.subtle))
+        return text
 
     def footer(self, height: int) -> Panel:
         th = self.th
         with self._lock:
             entries = list(self.logs)[-max(1, height - 2):]
-        text = Text()
+        text = Text(no_wrap=True, overflow="ellipsis")
         for i, (stamp, msg, dim) in enumerate(entries):
             if i:
                 text.append("\n")
             text.append(stamp + " ", style(th.faint))
-            text.append(msg, style(th.past if dim else th.subtle))
-        text.no_wrap = True
-        text.overflow = "ellipsis"
-        return self._panel(text, "log", title_color=th.faint, subtitle=KEYS_LINE)
+            text.append_text(self.log_line(msg, dim))
+        return self._panel(text, "log", title_color=th.faint)
+
+    def toolbar(self, row: int, width: int) -> Text:
+        """Clickable key chips along the bottom row."""
+        th, p = self.th, self.th.p
+        text = Text(" ", style(None, False, th.bg))
+        x = 1
+        hits = []
+        for key, label, action in CHIPS:
+            if action == "cmd:flow":
+                label = f"flow: {self.config.shuffle.flow}"
+            if action == "ui:presets" and self.menu_open:
+                label = "close presets"
+            chip = f" {key} "
+            seg = f" {label}   "
+            if x + len(chip) + len(seg) > width:
+                break
+            text.append(chip, style(p["crust"], True, p["mauve"] if action != "cmd:quit" else p["overlay1"]))
+            text.append(seg, style(th.subtle, False, th.bg))
+            hits.append((row, x, x + len(chip) + len(seg) - 2, action))
+            x += len(chip) + len(seg)
+        text.append(" " * max(0, width - x), style(None, False, th.bg))
+        self._toolbar_hits = hits
+        return text
 
     def render(self, width: int = 100, height: int = 40):
         try:
             layout = Layout()
+            self._menu_hits, self._toolbar_hits = [], []
             if height < 14:
-                layout.split_column(Layout(self.header(width), size=5), Layout(self.footer(max(3, height - 5))))
-                return layout
-            foot = 8 if height >= 30 else 6
-            layout.split_column(Layout(self.header(width), size=5), Layout(self.body(width), ratio=1),
-                                Layout(self.footer(foot), size=foot))
+                layout.split_column(Layout(self.header(width), size=HEADER_H),
+                                    Layout(self.footer(max(3, height - HEADER_H - 1))),
+                                    Layout(self.toolbar(height - 1, width), size=1))
+            else:
+                foot = 8 if height >= 34 else 6
+                body_h = height - HEADER_H - foot - 1
+                layout.split_column(Layout(self.header(width), size=HEADER_H),
+                                    Layout(self.body(width, body_h, HEADER_H), size=body_h),
+                                    Layout(self.footer(foot), size=foot),
+                                    Layout(self.toolbar(height - 1, width), size=1))
+            self._hits = self._menu_hits + self._toolbar_hits
             return layout
         except Exception as e:  # never let a render error take the screen down
             return Text(f"display error: {e}")

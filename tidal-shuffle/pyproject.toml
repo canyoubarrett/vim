@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tidal-shuffle"
-version = "0.3.0"
+version = "0.4.0"
 description = "A smarter shuffle for the TIDAL macOS app: picks the next song from Spotify, Last.fm or TIDAL radio and plays it in TIDAL automatically."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
     "click>=8.1",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "pillow>=10",                 # album covers in the full-screen view
     "websocket-client>=1.6",
     "requests>=2.31",
     # Accessibility API, used to drive the Spotify app's search page (macOS only)

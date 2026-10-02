@@ -91,6 +91,8 @@ class UiConfig:
     color: str = "auto"           # auto | truecolor | 256 | 16: force it if the terminal under-reports
     logo_file: str = ""           # an .svg (traced into braille) or ---BIG--- / ---SMALL--- braille art
     cell_aspect: float = 0.5      # a terminal cell's width / height, so the logo keeps its proportions
+    artwork: bool = True          # the album cover in the header (needs Pillow)
+    mouse: bool = True            # click the key chips and presets (hold Option/Fn to select text)
     fps: float = 12.0
 
 
@@ -356,6 +358,8 @@ ui:
   color: auto               # auto | truecolor | 256 | 16 (force it if colours look wrong or missing)
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
+  artwork: true             # the album cover in the header
+  mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)
   fps: 12
 
 tidal:
@@ -628,6 +632,8 @@ def _build(data: Mapping) -> AppConfig:
         "theme": lambda v, n: _as_choice(str(v).lower().replace("é", "e"), n, ("mocha", "macchiato", "frappe", "latte")),
         "logo_file": lambda v, n: str(v or ""),
         "cell_aspect": lambda v, n: _as_number(v, n, float, 0.2, 1.25),
+        "artwork": _as_bool,
+        "mouse": _as_bool,
         "fps": lambda v, n: _as_number(v, n, float, 1, 30),
     })
     _fill(cfg.tidal, data.get("tidal") or {}, "tidal", {

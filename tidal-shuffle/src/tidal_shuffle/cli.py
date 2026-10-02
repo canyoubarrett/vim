@@ -200,7 +200,7 @@ def run(dry_run, once, plain, **kwargs):
         raise click.ClickException(str(e))
     _print_startup(rt, method)
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True,
-                       timing_path=TIMING_FILE)
+                       timing_path=TIMING_FILE, apply_preset=rt.apply_preset)
     screen = None
     if cfg.ui.color != "auto":
         _use_color(cfg.ui.color)
@@ -235,6 +235,8 @@ def run(dry_run, once, plain, **kwargs):
             live = Live(ScreenRenderable(screen), console=console, screen=True, auto_refresh=True,
                         refresh_per_second=cfg.ui.fps, redirect_stdout=False, redirect_stderr=False)
             live.start()
+            if cfg.ui.mouse:
+                _mouse(True)
             _SCREEN = screen
         loop.run(dry_run=dry_run, once=once)
     except KeyboardInterrupt:
@@ -242,6 +244,8 @@ def run(dry_run, once, plain, **kwargs):
     finally:
         _SCREEN = None
         if live is not None:
+            if cfg.ui.mouse:
+                _mouse(False)
             live.stop()
         for c in controls:
             c.stop()
@@ -250,6 +254,17 @@ def run(dry_run, once, plain, **kwargs):
         for stamp, msg, dim in list(screen.logs)[-12:]:   # what happened last, on the normal screen
             console.print(f"[dim]{stamp}[/dim] {escape(msg)}", highlight=False)
     console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
+
+
+def _mouse(on: bool) -> None:
+    """Have the terminal report clicks and the wheel (to the key reader), or stop."""
+    from .controls import MOUSE_OFF, MOUSE_ON
+
+    try:
+        console.file.write(MOUSE_ON if on else MOUSE_OFF)
+        console.file.flush()
+    except Exception:
+        pass
 
 
 def _keep_spotify_hidden(cfg: AppConfig, spotify_sources: list):
@@ -291,7 +306,12 @@ def _make_screen(cfg: AppConfig, rt, loop):
     if cfg.ui.visualizer:
         art = Path(cfg.ui.logo_file).expanduser() if cfg.ui.logo_file else None
         scene = LogoScene(art_path=art, cell_aspect=cfg.ui.cell_aspect)
-    return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene)
+    artwork = None
+    if cfg.ui.artwork and rt.catalog is not None:
+        from .artwork import ArtworkService
+
+        artwork = ArtworkService(rt.catalog, paths.CONFIG_DIR / "cache" / "art", log=Verbose.log)
+    return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene, artwork=artwork, history=rt.history, post=loop.post)
 
 
 def _start_controls(cfg: AppConfig, loop, screen=None) -> list:
@@ -299,12 +319,15 @@ def _start_controls(cfg: AppConfig, loop, screen=None) -> list:
     from .controls import KEY_HELP, KeyReader, MediaKeyTap
 
     def command(cmd: str) -> None:
-        if cmd != "view":
-            loop.post(cmd)
-        elif screen is not None:
-            screen.toggle_view()
-        else:
+        if screen is not None:
+            if not screen.handle_input(cmd):      # menus and clicks first, then the loop
+                loop.post(cmd)
+        elif cmd == "view":
             say("the logo and lyrics are part of the full-screen view (leave out --plain)")
+        elif cmd == "presets":
+            say("pick a preset with --preset NAME, or in the full-screen view (leave out --plain)")
+        else:
+            loop.post(cmd)
 
     started = []
     keys = KeyReader(command) if cfg.player.terminal_keys else None

@@ -783,3 +783,31 @@ def test_next_key_plays_a_ready_pick_at_once(tmp_path):
     loop.post("next")
     loop.handle_commands()
     assert world.played == ["t-Next One"]
+
+
+def test_preset_command_applies_it_and_chooses_the_next_song_again(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    loop.step()
+    gen = loop.state.generation
+    loop.post("preset:vibe")
+    loop.handle_commands()
+    assert any("presets can only be switched" in m for m in logs)
+    applied = []
+
+    def apply(name):
+        applied.append(name)
+        loop.config.shuffle.flow = "vibe"
+        return f"preset: {name}"
+    loop.apply_preset = apply
+    loop.post("preset:vibe")
+    loop.handle_commands()
+    assert applied == ["vibe"] and "preset: vibe" in logs
+    assert loop.state.generation == gen + 1          # anything planned the old way is dropped
+
+    def broken(name):
+        raise ValueError("nope")
+    loop.apply_preset = broken
+    loop.post("preset:x")
+    loop.handle_commands()
+    assert any(m.startswith("⚠ preset x: nope") for m in logs)

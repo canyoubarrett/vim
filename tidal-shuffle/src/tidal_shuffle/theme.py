@@ -6,7 +6,7 @@ the roles the view uses them for.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 Color = tuple[int, int, int]
 
@@ -72,6 +72,7 @@ class Theme:
     logo: Color
     logo_glow: Color
     shadow: Color
+    p: dict = field(default_factory=dict, compare=False)   # the whole flavor: p["peach"], p["surface0"], ...
 
 
 def theme(flavor: str = "mocha") -> Theme:
@@ -81,5 +82,5 @@ def theme(flavor: str = "mocha") -> Theme:
         bg=p["base"], border=p["surface1"], title=p["mauve"], text=p["text"], subtle=p["subtext0"],
         faint=p["overlay0"], past=p["overlay1"], current_bg=p["mauve"], current_fg=p["crust"],
         playing=p["green"], paused=p["yellow"], bar=p["lavender"], bar_rest=p["surface1"], knob=p["pink"],
-        logo=p["mauve"], logo_glow=p["pink"], shadow=p["surface1"],
+        logo=p["mauve"], logo_glow=p["pink"], shadow=p["surface1"], p=p,
     )

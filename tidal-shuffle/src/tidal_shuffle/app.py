@@ -37,6 +37,7 @@ class Runtime:
     player: TidalPlayer
     nowplaying: NowPlayingBackend
     notes: list[str] = field(default_factory=list)
+    logger: Optional[Logger] = None
 
     def abort(self) -> None:
         """Ctrl+C: leave every app the way we found it (e.g. Spotify mid-harvest)."""
@@ -47,6 +48,42 @@ class Runtime:
                     abort()
                 except Exception:
                     pass
+
+    def apply_preset(self, name: str) -> str:
+        """Switch to preset ``name`` while running: its shuffle settings, Spotify
+        tuning and sources replace the current ones, in place (the engine and
+        sources keep their references). Returns a line for the log."""
+        from dataclasses import fields
+
+        from .config import load_config
+
+        cfg = self.config
+        new = load_config(cfg.config_path, preset=name)
+        for f in fields(cfg.shuffle):
+            setattr(cfg.shuffle, f.name, getattr(new.shuffle, f.name))
+        for f in fields(cfg.spotify.vibe):
+            setattr(cfg.spotify.vibe, f.name, getattr(new.spotify.vibe, f.name))
+        cfg.preset = name
+        if list(new.sources) != list(cfg.sources):
+            cfg.sources = list(new.sources)
+            old = {s.name: s for s in self.sources}
+            fresh = []
+            for name_ in cfg.sources:             # keep a source that stays, build the new ones
+                if name_ in old:
+                    fresh.append(old.pop(name_))
+                else:
+                    fresh.extend(build_sources(_only(cfg, name_), self.catalog, self.logger))
+            for gone in old.values():
+                close = getattr(gone, "close", None)
+                if close:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            self.sources[:] = fresh
+            self.engine.sources = list(fresh)
+        desc = (cfg.presets.get(name) or {}).get("description", "")
+        return f"preset: {name}" + (f" — {desc}" if desc else "")
 
     def close(self) -> None:
         for s in self.sources:
@@ -60,6 +97,15 @@ class Runtime:
             self.cdp.close()
         if self.catalog is not None:
             persist_session(self.catalog.session)
+
+
+def _only(cfg: AppConfig, source: str) -> AppConfig:
+    """A copy of ``cfg`` listing one source (to build just that one)."""
+    from copy import copy
+
+    one = copy(cfg)
+    one.sources = [source]
+    return one
 
 
 def build_catalog(cfg: AppConfig, printer: Logger = print, interactive: bool = True,
@@ -165,4 +211,4 @@ def build_runtime(cfg: AppConfig, logger: Optional[Logger] = None, printer: Logg
     player = TidalPlayer(cfg.player, cdp=cdp, luna=luna, log=logger)
     nowplaying = build_nowplaying(cfg, cdp, logger)
     return Runtime(config=cfg, history=history, catalog=catalog, sources=sources, engine=engine,
-                   cdp=cdp, luna=luna, player=player, nowplaying=nowplaying, notes=notes)
+                   cdp=cdp, luna=luna, player=player, nowplaying=nowplaying, notes=notes, logger=logger)

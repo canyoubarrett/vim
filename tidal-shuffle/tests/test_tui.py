@@ -200,3 +200,138 @@ def test_panel_title_says_timing_is_estimated():
     plain = Lyrics(lines=[LyricLine(None, "hello there")], synced=False, source="LRCLIB")
     out, _ = render(make_tui(plain), 120, 40)
     assert "Lyrics · LRCLIB · timing estimated" in out
+
+
+def find_row(out, needle):
+    for y, line in enumerate(out.splitlines()):
+        if needle in line:
+            return y, line.index(needle)
+    raise AssertionError(f"{needle!r} not on screen")
+
+
+def test_presets_menu_opens_moves_and_applies_with_keys():
+    tui = make_tui(None)
+    posted = []
+    tui.post = posted.append
+    assert tui.handle_input("presets") and tui.menu_open
+    out, _ = render(tui, 120, 40)
+    assert "Presets" in out and "warm-up" in out and "Energy rises" in out and "rising" in out
+    assert "ENERGY & SOUND" in out and "HOW PICKS ARE CHOSEN" in out
+    names = tui._preset_names()
+    assert names[:3] == ["radio", "warm-up", "wind-down"] and set(names) == set(tui.presets())
+    start = tui.menu_cursor
+    assert tui.handle_input("down") and tui.handle_input("wheel-down") and tui.handle_input("up")
+    assert tui.menu_cursor == start + 1
+    assert not tui.handle_input("playpause")              # still reaches the loop with the menu open
+    assert tui.handle_input("enter") and not tui.menu_open
+    assert posted == [f"preset:{names[start + 1]}"]
+    tui.handle_input("presets")
+    assert tui.handle_input("escape") and not tui.menu_open
+    assert tui.handle_input("up")                         # arrows do nothing with the menu closed
+    assert not tui.handle_input("next")
+
+
+def test_presets_menu_marks_the_preset_in_use_and_follows_the_cursor():
+    tui = make_tui(None)
+    tui.config.preset = "vibe"
+    tui.handle_input("presets")
+    assert tui._preset_names()[tui.menu_cursor] == "vibe"
+    out, _ = render(tui, 120, 30)                       # short window: the list scrolls to the cursor
+    y, _ = find_row(out, "● vibe ")
+    assert "▸" in out.splitlines()[y] and "similar" not in out.splitlines()[y]
+    assert "Songs with the same mood" in out.splitlines()[y]
+
+
+def test_clicking_a_preset_and_the_key_chips():
+    tui = make_tui(None)
+    posted = []
+    tui.post = posted.append
+    out, _ = render(tui, 120, 40)
+    y, x = find_row(out, " presets ")                   # the toolbar chip opens the menu
+    assert y == 39
+    assert tui.handle_input(f"click:{x + 2}:{y + 1}") and tui.menu_open
+    out, _ = render(tui, 120, 40)
+    y, x = find_row(out, "wind-down")
+    assert tui.handle_input(f"click:{x + 1}:{y + 1}")
+    assert posted == ["preset:wind-down"] and not tui.menu_open
+    out, _ = render(tui, 120, 40)
+    y, x = find_row(out, " n  next ")
+    tui.handle_input(f"click:{x + 2}:{y + 1}")
+    y, x = find_row(out, "flow: ")
+    tui.handle_input(f"click:{x + 1}:{y + 1}")
+    tui.handle_input("click:1:2")                        # nothing there: ignored
+    assert posted == ["preset:wind-down", "next", "flow"]
+
+
+def test_wide_screen_shows_up_next_and_album_art_placeholder():
+    tui = make_tui(None)
+    pick = tui.loop.state.plan.primary
+    pick.candidate.extra = {"energy": 0.7}
+    tui.loop.state.plan.picks = [pick]
+    tui.history = types.SimpleNamespace(recent=lambda n: [types.SimpleNamespace(title="Intro", artist="The xx",
+                                                                                source="spotify-app")])
+    out, svg = render(tui, 150, 40)
+    assert "Up next" in out and "RECENTLY PLAYED" in out and "Intro" in out
+    assert "▰" in out and "PLAYING" in out and "♪" in out
+    assert "display error" not in out
+
+
+def test_half_blocks_and_placeholder():
+    from PIL import Image
+
+    from tidal_shuffle.artwork import half_blocks, placeholder
+
+    img = Image.new("RGB", (4, 4), (255, 0, 0))
+    for x in range(4):
+        for y in range(2, 4):
+            img.putpixel((x, y), (0, 0, 255))
+    grid = half_blocks(img, 4, 2)
+    assert len(grid) == 2 and len(grid[0]) == 4
+    assert grid[0][0] == ("▀", (255, 0, 0), False, (255, 0, 0))
+    assert grid[1][0] == ("▀", (0, 0, 255), False, (0, 0, 255))
+    tile = placeholder(10, 5, (0, 0, 0), (200, 200, 200), (1, 2, 3))
+    assert len(tile) == 5 and all(len(r) == 10 for r in tile)
+    assert tile[2][5][0] == "♪" and tile[0][0][1] != tile[4][9][3]
+
+
+def test_artwork_service_fetches_in_the_background_and_caches(tmp_path):
+    import io
+    import time
+
+    from PIL import Image
+
+    from tidal_shuffle.artwork import ArtworkService
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(buf, "JPEG")
+    album = types.SimpleNamespace(id=77, cover="abc", image=lambda size: f"https://img/{size}")
+    catalog = types.SimpleNamespace(raw_track=lambda tid: types.SimpleNamespace(album=album),
+                                    find=lambda t, a: (types.SimpleNamespace(id="5"), 1.0))
+    fetched = []
+
+    def fetch(url):
+        fetched.append(url)
+        return buf.getvalue()
+
+    svc = ArtworkService(catalog, tmp_path, fetch=fetch)
+    assert svc.get("k", None, "T", "A") == "pending"
+    for _ in range(100):
+        img = svc.get("k", None, "T", "A")
+        if img != "pending":
+            break
+        time.sleep(0.02)
+    assert img is not None and img.size == (8, 8)
+    assert fetched == ["https://img/320"] and (tmp_path / "77.jpg").exists()
+    again = ArtworkService(catalog, tmp_path, fetch=fetch)       # from the disk cache
+    again._load("k", "5", "T", "A")
+    assert again.get("k", "5", "T", "A").size == (8, 8) and len(fetched) == 1
+    grid = svc.cells("k", img, 6, 3)
+    assert len(grid) == 3 and svc.cells("k", img, 6, 3) is grid
+
+
+def test_preset_sections_put_your_own_presets_last():
+    from tidal_shuffle.tui import preset_sections
+
+    sections = preset_sections({"balanced": {}, "my-evening": {}, "warm-up": {}, "radio": {}})
+    assert sections == [("Energy & sound", ["radio", "warm-up"]), ("How picks are chosen", ["balanced"]),
+                        ("Your presets", ["my-evening"])]

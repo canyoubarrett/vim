@@ -3,8 +3,9 @@
 Two inputs, both turned into the same commands ("playpause", "next",
 "previous", "quit", "help") and handed to a callback:
 
-* ``KeyReader``: single keys typed into the terminal (space, n, b, q, ?).
-  Needs nothing but a terminal.
+* ``KeyReader``: single keys typed into the terminal (space, n, b, q, ?), plus
+  arrows, Enter, Esc and mouse clicks and wheel for the full-screen view
+  ("up", "click:x:y", ...). Needs nothing but a terminal.
 * ``MediaKeyTap``: the keyboard's media keys (play/pause, next, previous).
   macOS sends those to the app that owns "Now Playing" (TIDAL), never to the
   focused window, so they are caught with a Quartz event tap before that
@@ -33,12 +34,68 @@ TERMINAL_KEYS = {
     "l": "view",
     "v": "view",
     "f": "flow",
+    "p": "presets",
     "q": "quit",
     "?": "help",
     "h": "help",
 }
 
-KEY_HELP = "space play/pause · n next pick · b back · f flow · l lyrics · q quit · ? help"
+KEY_HELP = "space play/pause · n next pick · b back · f flow · p presets · l lyrics · q quit · ? help"
+
+# Mouse reporting (SGR mode): clicks and the wheel arrive as \x1b[<b;x;yM.
+MOUSE_ON = "\x1b[?1000h\x1b[?1006h"
+MOUSE_OFF = "\x1b[?1006l\x1b[?1000l"
+
+
+def _csi(params: str, final: str) -> Optional[str]:
+    """The command for one escape sequence (arrow key, mouse event), if any."""
+    if final in "Mm" and params.startswith("<"):
+        try:
+            b, x, y = (int(v) for v in params[1:].split(";"))
+        except ValueError:
+            return None
+        if final == "m" or b & 32:          # button release, drag
+            return None
+        if b & 64:
+            return "wheel-up" if b & 1 == 0 else "wheel-down"
+        if b & 3 == 0:
+            return f"click:{x}:{y}"         # left button, 1-based column and row
+        return None
+    return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(final) if not params or params == "1" else None
+
+
+def parse_input(data: str) -> tuple[list[str], str]:
+    """Commands for typed text, and what is left of an unfinished escape
+    sequence (to be completed by the next read, or taken as Esc)."""
+    out: list[str] = []
+    i = 0
+    while i < len(data):
+        ch = data[i]
+        if ch == "\x1b":
+            if i + 1 >= len(data):
+                return out, data[i:]         # Esc alone, or the start of a sequence
+            if data[i + 1] in "[O":
+                j = i + 2
+                while j < len(data) and not ("\x40" <= data[j] <= "\x7e"):
+                    j += 1
+                if j >= len(data):
+                    return out, data[i:]
+                cmd = _csi(data[i + 2:j], data[j])
+                if cmd:
+                    out.append(cmd)
+                i = j + 1
+                continue
+            out.append("escape")
+            i += 1
+            continue
+        if ch in "\r\n":
+            out.append("enter")
+        else:
+            cmd = TERMINAL_KEYS.get(ch.lower())
+            if cmd:
+                out.append(cmd)
+        i += 1
+    return out, ""
 
 # NX_KEYTYPE_* codes carried in an NSSystemDefined (subtype 8) event's data1.
 NX_KEYTYPE_PLAY = 16
@@ -119,32 +176,28 @@ class KeyReader:
         return True
 
     def _run(self) -> None:
-        pending_escape = False
+        pending = ""
         while not self._stop.is_set():
             try:
-                ready, _, _ = select.select([self.fd], [], [], 0.2)
+                ready, _, _ = select.select([self.fd], [], [], 0.05 if pending else 0.2)
             except (OSError, ValueError):
                 return
             if not ready:
-                pending_escape = False
+                if pending:                    # nothing followed the Esc: it was the Esc key
+                    pending = ""
+                    self.on_command("escape")
                 continue
             try:
-                data = os.read(self.fd, 32)
+                data = os.read(self.fd, 256)
             except OSError:
                 return
             if not data:
                 return
-            for ch in data.decode("utf-8", "ignore"):
-                if ch == "\x1b":       # arrow keys and other escape sequences: ignore
-                    pending_escape = True
-                    continue
-                if pending_escape:
-                    if ch.isalpha() or ch == "~":
-                        pending_escape = False
-                    continue
-                command = TERMINAL_KEYS.get(ch.lower())
-                if command:
-                    self.on_command(command)
+            commands, pending = parse_input(pending + data.decode("utf-8", "ignore"))
+            if len(pending) > 32:
+                pending = ""                   # not a sequence we know
+            for command in commands:
+                self.on_command(command)
 
     def stop(self) -> None:
         self._stop.set()

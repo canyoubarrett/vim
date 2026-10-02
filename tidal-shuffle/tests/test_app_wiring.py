@@ -36,3 +36,36 @@ def test_id_lookup_config_validation():
     assert cfg.spotify.app.id_lookups == ["spotify-ui", "listenbrainz"]
     with pytest.raises(ConfigError, match="unknown lookup"):
         load_config(overrides={"spotify": {"app": {"id_lookups": ["odesli", "shazam"]}}}, env={})
+
+
+def test_switching_presets_while_running_updates_in_place(tmp_path):
+    import types
+
+    from tidal_shuffle.app import Runtime
+
+    path = tmp_path / "config.yaml"
+    path.write_text("sources: [tidal-radio, deezer]\n"
+                    "presets:\n  mine:\n    description: Just Last.fm\n    sources: [lastfm, tidal-radio]\n"
+                    "    shuffle: {strategy: random}\n", encoding="utf-8")
+    cfg = load_config(path, env={})
+    sources = build_sources(cfg, None)
+    radio = sources[0]
+    shuffle, vibe = cfg.shuffle, cfg.spotify.vibe
+    engine = types.SimpleNamespace(sources=list(sources))
+    rt = Runtime(config=cfg, history=None, catalog=None, sources=sources, engine=engine, cdp=None, luna=None,
+                 player=None, nowplaying=None)
+    msg = rt.apply_preset("warm-up")
+    assert msg == "preset: warm-up — Energy rises a little with every song."
+    assert cfg.preset == "warm-up" and cfg.shuffle is shuffle and shuffle.flow == "rising"
+    assert [s.name for s in rt.sources] == ["tidal-radio", "deezer"]      # sources untouched
+    assert rt.apply_preset("mine") == "preset: mine — Just Last.fm"
+    assert shuffle.strategy == "random" and shuffle.flow == "radio"       # the previous preset is gone
+    assert [s.name for s in rt.sources] == ["lastfm", "tidal-radio"]
+    assert rt.sources[1] is radio and [s.name for s in engine.sources] == ["lastfm", "tidal-radio"]
+    rt.apply_preset("workout")
+    assert cfg.spotify.vibe is vibe and vibe.energy == 0.9                # the Spotify tuning too
+    import pytest
+
+    from tidal_shuffle.config import ConfigError
+    with pytest.raises(ConfigError):
+        rt.apply_preset("nope")
