@@ -73,6 +73,15 @@ def test_parse_media_control_payload():
     assert abs(np.position_at(1700000010.0) - 22.5) < 0.01
 
 
+def test_parse_media_control_micros_and_null():
+    payload = {"bundleIdentifier": TIDAL_BUNDLE_ID, "playing": False, "title": "Song", "artist": "A",
+               "durationMicros": 243200000, "elapsedTimeMicros": 12500000, "timestampEpochMicros": 1700000000250000, "playbackRate": 1}
+    np = parse_media_control(payload)
+    assert np.duration == 243.2 and np.elapsed == 12.5 and abs(np.timestamp - 1700000000.25) < 1e-6
+    assert np.playing is False and np.playback_rate == 0.0 and np.position_at(1700000100.0) == 12.5
+    assert parse_media_control(None) is None  # `media-control get` prints the literal null
+
+
 def test_parse_media_control_stream_line_and_missing_fields():
     line = {"type": "data", "diff": False, "payload": {"bundleIdentifier": "com.spotify.client", "playing": False, "title": "Ad"}}
     np = parse_media_control(line)
@@ -88,7 +97,7 @@ def test_media_control_backend_runs_binary(tmp_path):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"bundleIdentifier": TIDAL_BUNDLE_ID, "playing": True, "title": "S", "artist": "A"}), stderr="")
     b = MediaControlBackend(binary="/fake/media-control", run=run)
-    assert b.read().title == "S" and calls[0][1:] == ["get", "--no-artwork"]
+    assert b.read().title == "S" and calls[0][1:] == ["get", "--micros", "--no-artwork"]
     assert b.available()[0] is False  # fake binary does not exist
     def bad(cmd, **kw):
         raise OSError("boom")
@@ -97,12 +106,35 @@ def test_media_control_backend_runs_binary(tmp_path):
 
 # ---- nowplaying-cli ----------------------------------------------------------
 def test_parse_nowplaying_cli_lines():
-    out = "Song\nArtist\nnull\n243.2\n12.5\n1\n2023-11-14 22:13:20 +0000\n"
+    out = "Song\nArtist\nnull\n243.2\n12.5\n1\n2023-11-14 22:13:20 +0000\nnull\n"
     np = parse_nowplaying_cli(out)
     assert np.title == "Song" and np.artist == "Artist" and np.album is None and np.duration == 243.2
     assert np.playing is True and np.is_tidal and np.source == "nowplaying-cli"
     assert parse_nowplaying_cli("null\nnull\n") is None
     assert parse_nowplaying_cli("Song\nArtist\n", assume_tidal=False).bundle_id is None
+
+
+def test_parse_nowplaying_cli_json_with_bundle_id():
+    out = json.dumps({"title": "Ad", "artist": "", "album": None, "duration": 30, "elapsedTime": 0, "playbackRate": 1,
+                      "timestamp": None, "clientBundleIdentifier": "com.spotify.client"}, indent=2)
+    np = parse_nowplaying_cli(out)
+    assert np.bundle_id == "com.spotify.client" and not np.is_tidal and np.timestamp is not None
+    out2 = json.dumps({"title": "S", "artist": "A", "clientBundleIdentifier": None})
+    assert parse_nowplaying_cli(out2).is_tidal
+
+
+def test_nowplaying_cli_backend_falls_back_to_line_format():
+    calls = []
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if "--json" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Usage: nowplaying-cli ...", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="S\nA\n\n200\n1\n1\n\n\n", stderr="")
+    b = NowPlayingCliBackend(binary="/fake/nowplaying-cli", run=run)
+    activity._busy_until.clear()
+    assert b.read().title == "S" and b._json_supported is False
+    b.read()
+    assert not any("--json" in c for c in calls[2:])
 
 
 def test_nowplaying_cli_backend_respects_busy_flag(monkeypatch):

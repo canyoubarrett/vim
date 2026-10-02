@@ -12,7 +12,7 @@ from .engine import Engine
 from .history import HistoryStore
 from .nowplaying.base import CompositeBackend, NowPlayingBackend
 from .sources.base import Source
-from .tidal.catalog import TidalCatalog, TidalLoginRequired, connect_session
+from .tidal.catalog import TidalCatalog, TidalLoginRequired, connect_session, persist_session
 from .tidal.cdp import TidalCdp
 from .tidal.luna import LunaApi
 from .tidal.player import TidalPlayer
@@ -48,6 +48,8 @@ class Runtime:
                     pass
         if self.cdp is not None:
             self.cdp.close()
+        if self.catalog is not None:
+            persist_session(self.catalog.session)
 
 
 def build_catalog(cfg: AppConfig, printer: Logger = print, interactive: bool = True,

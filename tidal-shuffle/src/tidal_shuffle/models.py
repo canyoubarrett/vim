@@ -139,6 +139,7 @@ class TidalTrack:
     explicit: bool = False
     available: bool = True
     popularity: Optional[int] = None
+    artist_id: Optional[str] = None
 
     @property
     def key(self) -> tuple[str, str]:

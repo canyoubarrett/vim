@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
-from ..models import Candidate, Seed
-from ..tidal.catalog import TidalCatalog, to_track
+from ..models import Candidate, Seed, TidalTrack
+from ..tidal.catalog import TidalCatalog
 from .base import tag
 
 
@@ -21,32 +21,31 @@ class TidalRadioSource:
             return False, "not logged in to TIDAL"
         return True, ""
 
-    def candidates(self, seeds: Sequence[Seed], limit: int) -> list[Candidate]:
-        from tidalapi.exceptions import TidalAPIError
+    def _fallbacks(self, seed: Seed, limit: int) -> list[TidalTrack]:
+        """Artist radio, then similar artists' top tracks, when track radio is empty."""
+        assert self.catalog is not None
+        track = self.catalog.get_track(seed.tidal_id) if seed.tidal_id else None
+        if track is None or not track.artist_id:
+            return []
+        tracks = self.catalog.artist_radio(track.artist_id, limit=limit)
+        if not tracks:
+            tracks = self.catalog.similar_artists_top_tracks(track.artist_id)
+        return tracks
 
+    def candidates(self, seeds: Sequence[Seed], limit: int) -> list[Candidate]:
         assert self.catalog is not None
         seed = seeds[0]
         if not seed.tidal_id:
             seed = self.catalog.resolve_seed(seed)
         if not seed.tidal_id:
             return []
-        raw = self.catalog.raw_track(seed.tidal_id)
-        tracks = []
-        try:
-            tracks = raw.get_track_radio(limit=max(limit, self.limit))
-        except TidalAPIError:
-            tracks = []
+        want = max(limit, self.limit)
+        tracks = self.catalog.track_radio(seed.tidal_id, limit=want)
         if not tracks:
-            try:
-                artist = getattr(raw, "artist", None)
-                if artist is not None and hasattr(artist, "get_radio"):
-                    tracks = artist.get_radio(limit=max(limit, self.limit))
-            except TidalAPIError:
-                tracks = []
+            tracks = self._fallbacks(seed, want)
         out: list[Candidate] = []
         n = max(1, len(tracks))
-        for i, t in enumerate(tracks):
-            tt = to_track(t)
+        for i, tt in enumerate(tracks):
             if not tt.available or tt.id == str(seed.tidal_id):
                 continue
             out.append(Candidate(

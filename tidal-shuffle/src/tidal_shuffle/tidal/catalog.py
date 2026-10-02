@@ -47,6 +47,7 @@ def to_track(t: Any) -> TidalTrack:
     available = getattr(t, "available", None)
     if available is None:
         available = getattr(t, "allow_streaming", True)
+    artist_id = getattr(getattr(t, "artist", None), "id", None)
     return TidalTrack(
         id=str(getattr(t, "id")),
         title=title,
@@ -58,6 +59,7 @@ def to_track(t: Any) -> TidalTrack:
         explicit=bool(getattr(t, "explicit", False)),
         available=bool(available),
         popularity=(int(popularity) if isinstance(popularity, (int, float)) and popularity >= 0 else None),
+        artist_id=str(artist_id) if artist_id is not None else None,
     )
 
 
@@ -71,16 +73,20 @@ def connect_session(session_file: Path, printer: Printer = print, interactive: b
     if session_factory is None:
         import tidalapi  # imported lazily so tests never need the network
 
-        session_factory = tidalapi.Session
+        # item_limit is appended as `limit` to every request (including the
+        # openapi v2 ISRC lookup), so keep it modest.
+        session_factory = lambda: tidalapi.Session(tidalapi.Config(item_limit=100))  # noqa: E731
     session = session_factory()
     session_file = Path(session_file).expanduser()
     if session_file.exists():
         try:
             session.load_session_from_file(session_file)
-        except Exception as e:  # corrupt/expired file; fall through to login
+        except Exception as e:  # corrupt/expired file, dead refresh token...; fall through to login
             log.info("could not load TIDAL session: %s", e)
     try:
         if session.check_login():
+            session._tidal_shuffle_loaded_token = getattr(session, "access_token", None)
+            session._tidal_shuffle_session_file = session_file
             return session
     except Exception as e:
         log.info("TIDAL session check failed: %s", e)
@@ -100,7 +106,25 @@ def connect_session(session_file: Path, printer: Printer = print, interactive: b
         raise TidalLoginRequired("TIDAL login did not complete")
     session_file.parent.mkdir(parents=True, exist_ok=True)
     session.save_session_to_file(session_file)
+    session._tidal_shuffle_loaded_token = getattr(session, "access_token", None)
+    session._tidal_shuffle_session_file = session_file
     return session
+
+
+def persist_session(session: Any) -> bool:
+    """Write the session file again if tidalapi refreshed the access token in memory."""
+    path = getattr(session, "_tidal_shuffle_session_file", None)
+    if path is None:
+        return False
+    if getattr(session, "access_token", None) == getattr(session, "_tidal_shuffle_loaded_token", None):
+        return False
+    try:
+        session.save_session_to_file(Path(path))
+        session._tidal_shuffle_loaded_token = session.access_token
+        return True
+    except Exception as e:
+        log.info("could not persist TIDAL session: %s", e)
+        return False
 
 
 class TidalCatalog:
@@ -118,6 +142,8 @@ class TidalCatalog:
 
     # -- raw access ---------------------------------------------------------
     def _retry(self, fn: Callable[[], Any], what: str) -> Any:
+        """tidalapi has no retry of its own: back off on 429, 5xx and connection errors."""
+        import requests
         from tidalapi.exceptions import TooManyRequests
 
         for attempt in range(3):
@@ -127,6 +153,16 @@ class TidalCatalog:
                 wait = e.retry_after if getattr(e, "retry_after", -1) and e.retry_after > 0 else 2 ** attempt
                 self.log(f"TIDAL rate limited during {what}; waiting {wait}s")
                 self._sleep(min(float(wait), 30.0))
+            except requests.HTTPError as e:
+                status = getattr(getattr(e, "response", None), "status_code", 0) or 0
+                if status < 500:
+                    raise
+                self.log(f"TIDAL server error {status} during {what}; retrying")
+                self._sleep(min(2.0 ** attempt, 8.0))
+            except (requests.ConnectionError, requests.Timeout, ValueError) as e:
+                # ValueError covers tidalapi choking on a non-JSON error body.
+                self.log(f"TIDAL request failed during {what}: {e}; retrying")
+                self._sleep(min(2.0 ** attempt, 8.0))
         return fn()
 
     def search_tracks(self, query: str, limit: Optional[int] = None) -> list[TidalTrack]:
@@ -163,8 +199,59 @@ class TidalCatalog:
         return track
 
     def raw_track(self, tidal_id: str) -> Any:
-        """The underlying ``tidalapi.Track`` (needed for radio endpoints)."""
+        """The underlying ``tidalapi.Track`` with full metadata."""
         return self._retry(lambda: self.session.track(str(tidal_id)), f"track {tidal_id}")
+
+    # -- radio ----------------------------------------------------------------
+    def _radio_tracks(self, fn: Callable[[], Any], what: str) -> list[TidalTrack]:
+        from tidalapi.exceptions import TidalAPIError
+
+        try:
+            items = self._retry(fn, what) or []
+        except TidalAPIError as e:
+            self.log(f"{what}: {e}")
+            return []
+        out = []
+        for t in items:
+            if getattr(t, "duration", None) is None and not hasattr(t, "name"):
+                continue  # videos and other non-track items
+            out.append(to_track(t))
+        return out
+
+    def track_radio(self, tidal_id: str, limit: int = 50) -> list[TidalTrack]:
+        """TIDAL's track radio. Builds the Track shell without a metadata request."""
+        def fetch():
+            shell = self.session.track()
+            shell.id = str(tidal_id)
+            return shell.get_track_radio(limit=limit)
+        return self._radio_tracks(fetch, f"track radio {tidal_id}")
+
+    def artist_radio(self, artist_id: str, limit: int = 50) -> list[TidalTrack]:
+        def fetch():
+            shell = self.session.artist()
+            shell.id = str(artist_id)
+            return shell.get_radio(limit=limit)
+        return self._radio_tracks(fetch, f"artist radio {artist_id}")
+
+    def similar_artists_top_tracks(self, artist_id: str, artists: int = 5, per_artist: int = 5) -> list[TidalTrack]:
+        from tidalapi.exceptions import TidalAPIError
+
+        def fetch_similar():
+            shell = self.session.artist()
+            shell.id = str(artist_id)
+            return shell.get_similar()
+        try:
+            similar = self._retry(fetch_similar, f"similar artists {artist_id}") or []
+        except TidalAPIError:
+            return []
+        out: list[TidalTrack] = []
+        for a in similar[:artists]:
+            try:
+                top = self._retry(lambda a=a: a.get_top_tracks(limit=per_artist), f"top tracks {getattr(a, 'id', '?')}") or []
+            except TidalAPIError:
+                continue
+            out.extend(to_track(t) for t in top)
+        return out
 
     # -- matching -----------------------------------------------------------
     def _score(self, title: str, artist: str, duration: Optional[float], t: TidalTrack) -> float:

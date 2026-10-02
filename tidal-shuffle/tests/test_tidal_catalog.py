@@ -150,3 +150,58 @@ def test_connect_session_interactive_login_and_save(tmp_path):
 def test_connect_session_non_interactive_raises(tmp_path):
     with pytest.raises(TidalLoginRequired):
         connect_session(tmp_path / "x.json", interactive=False, session_factory=lambda: FakeLoginSession(file_ok=False))
+
+
+def test_track_radio_uses_shell_without_metadata_fetch():
+    class RadioSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.fetched = []
+        def track(self, track_id=None, with_album=False):
+            if track_id is None:
+                from types import SimpleNamespace
+                shell = SimpleNamespace(id=None)
+                shell.get_track_radio = lambda limit=100: [fake_track(5, "R", ["A"]), fake_track(6, "V", ["B"])][:limit]
+                return shell
+            return super().track(track_id)
+        def artist(self, artist_id=None):
+            from types import SimpleNamespace
+            shell = SimpleNamespace(id=None)
+            shell.get_radio = lambda limit=100: [fake_track(8, "AR", ["C"])]
+            sim = SimpleNamespace(id="s1", get_top_tracks=lambda limit=5: [fake_track(9, "Top", ["D"])])
+            shell.get_similar = lambda: [sim]
+            return shell
+    cat = TidalCatalog(RadioSession())
+    assert [t.title for t in cat.track_radio("1", limit=1)] == ["R"]
+    assert [t.title for t in cat.artist_radio("2")] == ["AR"]
+    assert [t.title for t in cat.similar_artists_top_tracks("2")] == ["Top"]
+
+
+def test_retry_on_server_error_and_not_on_client_error():
+    import requests
+    calls = {"n": 0}
+    class S(FakeSession):
+        def search(self, query, models=None, limit=50, offset=0):
+            calls["n"] += 1
+            resp = SimpleNamespace(status_code=503 if calls["n"] == 1 else 400)
+            if calls["n"] <= 2:
+                raise requests.HTTPError("boom", response=resp)
+            return {"tracks": []}
+    waits = []
+    cat = TidalCatalog(S(), sleep=waits.append)
+    with pytest.raises(requests.HTTPError):
+        cat.search_tracks("x")
+    assert calls["n"] == 2 and waits == [1.0]
+
+
+def test_persist_session_only_when_token_changed(tmp_path):
+    from tidal_shuffle.tidal.catalog import persist_session
+    f = tmp_path / "sess.json"
+    f.write_text("{}")
+    sess = FakeLoginSession()
+    sess.access_token = "old"
+    connect_session(f, printer=lambda m: None, session_factory=lambda: sess)
+    assert persist_session(sess) is False
+    sess.access_token = "new"
+    assert persist_session(sess) is True and sess.saved == f
+    assert persist_session(sess) is False
