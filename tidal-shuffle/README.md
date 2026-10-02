@@ -86,10 +86,9 @@ simply follows your choice.
   the near ones brighter and faster, slanting a little in the wind, drawn in
   braille dots so they fall smoothly. It is a drizzle for calm songs and
   heavier for energetic ones (following the flow's target energy), and it
-  falls in slow motion while paused. The panels are glass: the rain shows
-  through their open space, faintly, but never between words
-  (`ui.backdrop: false` turns the rain off, `ui.glass` sets how much shows
-  through, 0 to 0.6);
+  falls in slow motion while paused. It stays behind the panels: inside
+  them there is no rain, only a faint tint of the sky (`ui.backdrop: false`
+  turns the rain off, `ui.glass` sets the tint, 0 to 0.6);
 * on the left, the Alter Era logo, as big as the panel allows, floating: it
   bobs, drifts and tilts, its colour breathes, and its shadow shrinks as it
   rises. It is traced from the
@@ -124,6 +123,15 @@ away and the logo glides over to fill the space, and glides back when lyrics
 return. Covers dissolve into each other and the preset menu fades in and out.
 All of this is drawn cell by cell in true colour; if your terminal struggles
 to keep up (Terminal.app can), lower `ui.fps` or turn off `ui.backdrop`.
+
+**Colours in Terminal.app.** Terminal.app does not tell programs that it can
+show true colour (it sets no `COLORTERM`), so they fall back to its
+256-colour palette, which has no close match for Catppuccin's purples and
+blue-greys. On macOS 26 and later, where Terminal.app shows true colour,
+Tidal Shuffle switches it on by itself. On older macOS, Terminal.app really
+has only 256 colours: the theme is approximated, and `run` says so. iTerm2,
+Ghostty, WezTerm and kitty show the exact colours. `ui.color: truecolor`
+forces true colour in any terminal that supports it without saying so.
 
 **Presets menu.** Press `p` (or click the `p presets` chip) to open the
 preset menu over the logo and lyrics. Presets are grouped (energy & sound,

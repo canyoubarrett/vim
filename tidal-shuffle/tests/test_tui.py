@@ -493,7 +493,7 @@ def test_rain_behind_the_panels():
     assert abs(rain._t - t - 0.125) < 1e-9
 
 
-def test_rain_shows_faintly_through_glass():
+def test_rain_stays_behind_the_panels():
     from rich.segment import Segment
 
     from tidal_shuffle.fx import Canvas
@@ -501,12 +501,12 @@ def test_rain_shows_faintly_through_glass():
 
     cells = [[["⡇", (200, 200, 200), False, (17, 17, 27)] for _ in range(8)]]
     canvas = Canvas(cells, MOCHA.bg, MOCHA.text, glass=0.22)
-    canvas.blit([[Segment("   a b  ", mkstyle(MOCHA.text, False, MOCHA.bg))]], 0, 0, 8, 1)
-    assert cells[0][0][0] == "⡇" and sum(cells[0][0][1]) < sum((200, 200, 200)) / 2   # faint
-    assert "".join(c[0] for c in cells[0][2:7]) == " a b "                          # never between words
-    solid = [[["⡇", (200, 200, 200), False, (17, 17, 27)]]]
-    Canvas(solid, MOCHA.bg, MOCHA.text).blit([[Segment(" ", mkstyle(None, False, (5, 5, 5)))]], 0, 0, 1, 1)
-    assert solid[0][0][0] == " "                                         # solid panels hide it
+    canvas.blit([[Segment("      ab", mkstyle(MOCHA.text, False, MOCHA.bg))]], 0, 0, 8, 1)
+    assert "".join(c[0] for c in cells[0]) == "      ab"            # no rain inside a box
+    assert cells[0][0][3] != MOCHA.bg                               # glass: tinted by the sky
+    outside = [[["⡇", (200, 200, 200), False, (17, 17, 27)] for _ in range(4)]]
+    Canvas(outside, MOCHA.bg, MOCHA.text).blit([[Segment("ab", mkstyle(MOCHA.text))]], 0, 0, 2, 1)
+    assert outside[0][3][0] == "⡇"                                  # it falls around the boxes
 
 
 def test_logo_is_as_big_as_the_panel_allows():

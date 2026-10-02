@@ -86,7 +86,7 @@ def test_version_names_the_copy():
 
     from tidal_shuffle.cli import cli
     out = CliRunner().invoke(cli, ["--version"]).output
-    assert out.startswith("tidal-shuffle 0.6.1") and " from " in out
+    assert out.startswith("tidal-shuffle 0.6.2") and " from " in out
 
 
 def test_update_refuses_outside_a_git_clone(monkeypatch):
@@ -97,3 +97,17 @@ def test_update_refuses_outside_a_git_clone(monkeypatch):
     monkeypatch.setattr(bi, "git_root", lambda: None)
     res = CliRunner().invoke(cli, ["update"])
     assert res.exit_code != 0 and "not installed from a git clone" in res.output
+
+
+
+def test_auto_colour_for_terminal_app_and_others():
+    from tidal_shuffle.cli import auto_color
+
+    app = {"TERM_PROGRAM": "Apple_Terminal", "TERM": "xterm-256color"}
+    assert auto_color(app, "26.0.1", "256") == ("truecolor", "")
+    mode, hint = auto_color(app, "15.5", "256")
+    assert mode is None and "256 colours" in hint
+    assert auto_color({"TERM_PROGRAM": "iTerm.app", "COLORTERM": "truecolor"}, "15.5", "truecolor") == (None, "")
+    mode, hint = auto_color({"TERM": "xterm-256color"}, "", "256")
+    assert mode is None and "ui.color: truecolor" in hint
+    assert auto_color(dict(app, NO_COLOR="1"), "26.0", None) == (None, "")

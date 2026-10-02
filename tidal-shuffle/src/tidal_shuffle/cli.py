@@ -204,6 +204,12 @@ def run(dry_run, once, plain, **kwargs):
     screen = None
     if cfg.ui.color != "auto":
         _use_color(cfg.ui.color)
+    else:
+        mode, hint = auto_color(os.environ, platform.mac_ver()[0], console.color_system)
+        if mode:
+            _use_color(mode)
+        if hint and cfg.ui.screen == "full" and not plain:
+            console.print(f"[yellow]{hint}[/yellow]")
     if cfg.ui.screen == "full" and not plain and not once:
         if console.is_terminal:
             screen = _make_screen(cfg, rt, loop)
@@ -278,6 +284,29 @@ def _keep_spotify_hidden(cfg: AppConfig, spotify_sources: list):
     src = spotify_sources[0]
     guard = SpotifyGuard(lambda: is_busy() or bool(getattr(src, "_launched_by_us", False)), log=say)
     return guard if guard.start() else None
+
+
+def auto_color(env, mac_version: str, system: Optional[str]) -> tuple[Optional[str], str]:
+    """(colour system to force, or None; a note for the user) for terminals that
+    do not say what they can show. Terminal.app never announces true colour
+    (it sets no COLORTERM): from macOS 26 it shows it, so it is switched on;
+    before that it has 256 colours only, and the Catppuccin tones come out
+    approximated."""
+    if system == "truecolor" or env.get("NO_COLOR"):
+        return None, ""
+    if env.get("TERM_PROGRAM") == "Apple_Terminal":
+        try:
+            major = int((mac_version or "0").split(".")[0])
+        except ValueError:
+            major = 0
+        if major >= 26:
+            return "truecolor", ""
+        return None, ("Terminal.app on this macOS shows 256 colours, so the Catppuccin colours are approximated; "
+                      "iTerm2, Ghostty, WezTerm or kitty show them exactly")
+    if system in ("256", "standard"):
+        return None, (f"your terminal reports {'256' if system == '256' else '16'} colours (COLORTERM is not set), "
+                      "so the theme is approximated; if it can show true colour, set ui.color: truecolor")
+    return None, ""
 
 
 def _use_color(mode: str) -> None:

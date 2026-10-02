@@ -3,8 +3,8 @@
 Rich lays out one box at a time and paints every cell; to have a living
 background *behind* the boxes, the screen is composed here instead: the rain
 is drawn first, then every panel is rendered by Rich on its own and laid on
-top. Panel cells in the theme's base colour are "glass": they take a little
-of the sky's colour and the rain behind shows through them, faintly. A panel
+top. The rain stays behind the panels; panel cells in the theme's base
+colour take a little of the sky's colour behind them ("glass"). A panel
 can be laid down part-transparent (``opacity``), which is how panels fade in
 and out.
 
@@ -144,7 +144,6 @@ class Canvas:
         self.base_bg = base_bg
         self.text = text
         self.glass = glass
-        self.see = min(1.0, glass * 1.4)        # how clearly the rain shows through glass
         self._style_cache: dict = {}
         self._widths: dict = {}
 
@@ -188,15 +187,11 @@ class Canvas:
             row = cells[yy]
             cx = x
             end = min(self.w, x + w)
-            # the rain shows through open glass only, never between words
-            text = "".join(seg.text for seg in line if not seg.control)
-            k = -1
             for seg in line:
                 if seg.control:
                     continue
                 fg, bold, bg = self._parts(seg.style)
                 for ch in seg.text:
-                    k += 1
                     if cx >= end:
                         break
                     wd = self._width(ch)
@@ -205,17 +200,12 @@ class Canvas:
                         continue
                     under = row[cx]
                     sky = under[3]
-                    glassy = bg is None or bg == base
-                    if glassy:
+                    if bg is None or bg == base:
                         cbg = lerp(base, sky, glass)        # glass: tinted by the sky behind
                     else:
                         cbg = bg
                     cfg = fg or self.text
-                    if (ch == " " and glassy and under[0] != " " and opacity >= 0.999
-                            and text[max(0, k - 2):k + 3].strip() == ""):
-                        # glass: the rain behind shows through, faintly
-                        row[cx] = [under[0], lerp(cbg, under[1] or cbg, self.see), False, cbg]
-                    elif opacity < 0.999:
+                    if opacity < 0.999:
                         nbg = lerp(sky, cbg, opacity)
                         if ch == " ":
                             # a faded panel lets what is under it show, dimmed by the panel
