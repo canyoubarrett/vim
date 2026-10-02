@@ -80,6 +80,16 @@ class DeezerConfig:
 
 
 @dataclass
+class UiConfig:
+    screen: str = "full"          # full: full-screen view while running | plain: scrolling log
+    lyrics: bool = True           # look up lyrics for the song playing
+    lyrics_sources: list[str] = field(default_factory=lambda: ["tidal", "lrclib"])
+    visualizer: bool = True       # the Alter Era scene when a song has no lyrics
+    logo_file: str = ""           # an alter-era.txt style file (---BIG--- / ---SMALL--- braille art)
+    fps: float = 12.0
+
+
+@dataclass
 class TidalConfig:
     session_file: Path = field(default_factory=lambda: TIDAL_SESSION_FILE)
     radio_limit: int = 50
@@ -135,6 +145,7 @@ class AppConfig:
     spotify: SpotifyConfig = field(default_factory=SpotifyConfig)
     lastfm: LastfmConfig = field(default_factory=LastfmConfig)
     deezer: DeezerConfig = field(default_factory=DeezerConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
     tidal: TidalConfig = field(default_factory=TidalConfig)
     presets: dict = field(default_factory=dict)
     preset: Optional[str] = None
@@ -294,6 +305,14 @@ lastfm:
 
 deezer:
   enabled: true
+
+ui:
+  screen: full              # full: full-screen view with lyrics while running | plain: scrolling log
+  lyrics: true              # synced lyrics from TIDAL, then LRCLIB (free, no key)
+  lyrics_sources: [tidal, lrclib]
+  visualizer: true          # the Alter Era rain and floating logo when a song has no lyrics
+  logo_file: ""             # your own ---BIG--- / ---SMALL--- braille art file
+  fps: 12
 
 tidal:
   session_file: ~/.config/tidal-shuffle/tidal_session.json
@@ -482,7 +501,7 @@ def _upgrade_legacy(data: dict) -> dict:
 def _build(data: Mapping) -> AppConfig:
     cfg = AppConfig()
     data = dict(data or {})
-    top_valid = {"sources", "shuffle", "player", "spotify", "lastfm", "deezer", "tidal", "presets"}
+    top_valid = {"sources", "shuffle", "player", "spotify", "lastfm", "deezer", "ui", "tidal", "presets"}
     for key in data:
         if key not in top_valid:
             raise ConfigError(f"{key}: unknown top-level option (valid: {', '.join(sorted(top_valid))})")
@@ -553,6 +572,14 @@ def _build(data: Mapping) -> AppConfig:
         cfg.spotify.vibe = _vibe_from(vibe_data, "spotify.vibe")
     _fill(cfg.lastfm, data.get("lastfm") or {}, "lastfm", {"api_key": _opt_str, "expand_similar_artists": _as_bool})
     _fill(cfg.deezer, data.get("deezer") or {}, "deezer", {"enabled": _as_bool})
+    _fill(cfg.ui, data.get("ui") or {}, "ui", {
+        "screen": lambda v, n: _as_choice(v, n, ("full", "plain")),
+        "lyrics": _as_bool,
+        "lyrics_sources": lambda v, n: [_as_choice(x, n, ("tidal", "lrclib")) for x in (v if isinstance(v, list) else str(v).split(","))],
+        "visualizer": _as_bool,
+        "logo_file": lambda v, n: str(v or ""),
+        "fps": lambda v, n: _as_number(v, n, float, 1, 30),
+    })
     _fill(cfg.tidal, data.get("tidal") or {}, "tidal", {
         "session_file": lambda v, n: Path(str(v)).expanduser(),
         "radio_limit": lambda v, n: int(_as_number(v, n, int, 1, 100)),

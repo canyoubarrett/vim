@@ -28,15 +28,16 @@ TERMINAL_KEYS = {
     " ": "playpause",
     "k": "playpause",
     "n": "next",
-    "l": "next",
     "b": "previous",
     "j": "previous",
+    "l": "view",
+    "v": "view",
     "q": "quit",
     "?": "help",
     "h": "help",
 }
 
-KEY_HELP = "space play/pause · n next pick · b back · q quit · ? help"
+KEY_HELP = "space play/pause · n next pick · b back · l lyrics/visualizer · q quit · ? help"
 
 # NX_KEYTYPE_* codes carried in an NSSystemDefined (subtype 8) event's data1.
 NX_KEYTYPE_PLAY = 16

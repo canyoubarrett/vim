@@ -38,9 +38,11 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 SONG = 14  # seconds per song; short so the test runs quickly
 
 
-def track(id, title, artist, artist_id, spotify=True, spotify_title=None, duration=SONG, album="Album"):
+def track(id, title, artist, artist_id, spotify=True, spotify_title=None, duration=SONG, album="Album", lyrics=None):
     t = {"id": str(id), "title": title, "artist": artist, "artist_id": artist_id, "album": album, "album_id": id,
          "duration": duration, "auto_next": "190", "album_tracks": []}
+    if lyrics:
+        t["lyrics"] = lyrics
     if spotify:
         t["spotify"] = f"sp{id}"
     if spotify_title:
@@ -50,7 +52,8 @@ def track(id, title, artist, artist_id, spotify=True, spotify_title=None, durati
 
 CATALOG = {
     "tracks": [
-        track(101, "Neon Harbor", "Glass Coast", 1),
+        track(101, "Neon Harbor", "Glass Coast", 1,
+              lyrics="[00:00.50]Lights across the neon harbor\n[00:03.00]Ships that never sail\n[00:06.00]Glass along the coast"),
         track(102, "Paper Lanterns", "Velvet Static", 2),
         track(103, "Midnight Ferry", "Ninth Avenue", 3, spotify_title="Midnight Ferry - 2019 Remaster"),
         track(104, "Copper Skies", "Low Orbit", 4),
@@ -227,3 +230,57 @@ def test_diagnostics_and_dry_run_commands(mac):
     playtest = cli(mac, "playtest", "104")
     assert playtest.returncode == 0 and "result: ok" in playtest.stdout, playtest.stdout
     assert get(port, "/__played")[-1]["id"] == "104"
+
+
+def test_full_screen_view_in_a_real_terminal(mac):
+    """`run` in a pseudo-terminal: the full-screen view draws, shows TIDAL's
+    synced lyrics, switches to the visualizer with `l`, and quits on `q`."""
+    import fcntl
+    import pty
+    import struct
+    import termios
+    import threading
+
+    port = mac["port"]
+    cfg = yaml.safe_load(mac["config"].read_text())
+    cfg["ui"] = {"lyrics_sources": ["tidal"], "fps": 10}
+    mac["config"].write_text(yaml.safe_dump(cfg))
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    env = dict(mac["env"], TERM="xterm-256color", COLORTERM="truecolor")
+    env.pop("COLUMNS", None)
+    proc = subprocess.Popen([sys.executable, str(HERE / "harness.py"), "run", "--config", str(mac["config"])],
+                            env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    mac["procs"].append(proc)
+    os.close(slave)
+    chunks = []
+
+    def pump():
+        while True:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            chunks.append(data)
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    seen = lambda text: text.encode() in b"".join(chunks)
+    try:
+        assert wait_until(lambda: get(port, "/json/version"), 30), "tidal-shuffle did not start TIDAL"
+        get(port, "/__play?id=101&how=user")
+        assert wait_until(lambda: seen("Neon Harbor") and seen("Lyrics · TIDAL"), 15), "no lyrics view"
+        assert wait_until(lambda: seen("Ships that never sail"), 10)
+        os.write(master, b"l")
+        assert wait_until(lambda: seen("Alter Era"), 5), "l did not switch to the visualizer"
+        assert wait_until(lambda: seen("\u28c0".encode().decode()), 5)   # braille: the logo is drawn
+        os.write(master, b"q")
+        assert proc.wait(timeout=20) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    reader.join(timeout=2)
+    out = b"".join(chunks).decode("utf-8", "replace")
+    assert "\x1b[?1049h" in out and "\x1b[?1049l" in out   # entered and left the alternate screen
+    assert "Stopped after" in out and "Traceback" not in out, out[-3000:]

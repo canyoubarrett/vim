@@ -86,6 +86,14 @@ lastfm:
 deezer:
   enabled: true
 
+ui:
+  screen: full              # full: full-screen view with lyrics while running | plain: scrolling log
+  lyrics: true              # synced lyrics from TIDAL, then LRCLIB (free, no key)
+  lyrics_sources: [tidal, lrclib]
+  visualizer: true          # the Alter Era rain and floating logo when a song has no lyrics
+  logo_file: ""             # your own ---BIG--- / ---SMALL--- braille art file
+  fps: 12
+
 tidal:
   session_file: ~/.config/tidal-shuffle/tidal_session.json
   radio_limit: 50

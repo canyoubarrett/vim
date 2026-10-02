@@ -31,7 +31,14 @@ def _stamp() -> str:
     return _dt.datetime.now().strftime("%H:%M:%S")
 
 
+# The full-screen view, while `run` shows it: log lines go to its log panel.
+_SCREEN = None
+
+
 def say(msg: str) -> None:
+    if _SCREEN is not None:
+        _SCREEN.log(msg)
+        return
     console.print(f"[dim]{_stamp()}[/dim] {escape(msg)}", highlight=False)
 
 
@@ -41,6 +48,9 @@ class Verbose:
     @classmethod
     def log(cls, msg: str) -> None:
         if cls.enabled:
+            if _SCREEN is not None:
+                _SCREEN.log("  " + msg, dim=True)
+                return
             console.print(f"[dim]{_stamp()}   {escape(msg)}[/dim]", highlight=False)
 
 
@@ -159,7 +169,8 @@ def cli():
 @common_options
 @click.option("--dry-run", is_flag=True, help="Plan picks but never touch TIDAL")
 @click.option("--once", is_flag=True, help="Stop after the first plan")
-def run(dry_run, once, **kwargs):
+@click.option("--plain", is_flag=True, help="Scrolling log instead of the full-screen view with lyrics")
+def run(dry_run, once, plain, **kwargs):
     """Follow TIDAL and keep the music going."""
     cfg = _config_from(kwargs)
     _banner("Tidal Shuffle", "a smarter shuffle for the TIDAL app")
@@ -174,7 +185,10 @@ def run(dry_run, once, **kwargs):
     _print_startup(rt, method)
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True,
                        timing_path=TIMING_FILE)
-    controls = _start_controls(cfg, loop)
+    screen = None
+    if cfg.ui.screen == "full" and not plain and not once and console.is_terminal:
+        screen = _make_screen(cfg, rt, loop)
+    controls = _start_controls(cfg, loop, screen)
     import signal
 
     def _stop(signum, frame):  # closing the terminal or `kill` should clean up like Ctrl+C
@@ -182,30 +196,78 @@ def run(dry_run, once, **kwargs):
     for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if sig is not None:
             signal.signal(sig, _stop)
+    global _SCREEN
+    live = None
     try:
+        if screen is not None:
+            from rich.live import Live
+
+            from .tui import ScreenRenderable
+
+            live = Live(ScreenRenderable(screen), console=console, screen=True, auto_refresh=True,
+                        refresh_per_second=cfg.ui.fps, redirect_stdout=False, redirect_stderr=False)
+            live.start()
+            _SCREEN = screen
         loop.run(dry_run=dry_run, once=once)
     except KeyboardInterrupt:
         rt.abort()
     finally:
+        _SCREEN = None
+        if live is not None:
+            live.stop()
         for c in controls:
             c.stop()
         rt.close()
+    if screen is not None:
+        for stamp, msg, dim in list(screen.logs)[-12:]:   # what happened last, on the normal screen
+            console.print(f"[dim]{stamp}[/dim] {escape(msg)}", highlight=False)
     console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
 
 
-def _start_controls(cfg: AppConfig, loop) -> list:
+def _make_screen(cfg: AppConfig, rt, loop):
+    """The full-screen view: lyrics service, Alter Era scene, log panel."""
+    from . import paths
+    from .lyrics import LrclibLyrics, LyricsService, TidalLyrics
+    from .tui import ShuffleTUI
+    from .visualizer import AlterEraScene
+
+    lyrics = None
+    if cfg.ui.lyrics:
+        sources = []
+        for name in cfg.ui.lyrics_sources:
+            if name == "tidal" and rt.catalog is not None:
+                sources.append(TidalLyrics(rt.catalog))
+            elif name == "lrclib":
+                sources.append(LrclibLyrics())
+        lyrics = LyricsService(sources, cache_path=paths.CONFIG_DIR / "cache" / "lyrics.json", log=Verbose.log)
+    scene = None
+    if cfg.ui.visualizer:
+        art = Path(cfg.ui.logo_file).expanduser() if cfg.ui.logo_file else None
+        scene = AlterEraScene(art_path=art)
+    return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene)
+
+
+def _start_controls(cfg: AppConfig, loop, screen=None) -> list:
     """Terminal keys and media keys; returns what was started (to stop later)."""
     from .controls import KEY_HELP, KeyReader, MediaKeyTap
 
+    def command(cmd: str) -> None:
+        if cmd != "view":
+            loop.post(cmd)
+        elif screen is not None:
+            screen.toggle_view()
+        else:
+            say("lyrics and the visualizer are part of the full-screen view (leave out --plain)")
+
     started = []
-    keys = KeyReader(loop.post) if cfg.player.terminal_keys else None
+    keys = KeyReader(command) if cfg.player.terminal_keys else None
     if keys is not None and keys.start():
         started.append(keys)
         console.print(f"[dim]keys: {KEY_HELP} · Ctrl+C stops[/dim]")
     else:
         console.print("[dim]Press Ctrl+C to stop[/dim]")
     if cfg.player.media_keys != "off":
-        tap = MediaKeyTap(loop.post, mode=cfg.player.media_keys, log=say)
+        tap = MediaKeyTap(command, mode=cfg.player.media_keys, log=say)
         if tap.start():
             started.append(tap)
             where = "while this window is in front" if cfg.player.media_keys == "focus" else "everywhere"

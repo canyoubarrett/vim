@@ -74,6 +74,25 @@ Spotify for the song's radio in the background, chooses the next song plus
 two backups, and hands it to TIDAL. Skip to something else yourself and it
 simply follows your choice.
 
+**The screen.** In a terminal, `run` takes over the window:
+
+* at the top, the song playing, a progress bar, and the next pick;
+* in the middle, the **lyrics**, scrolling with the song, the line being sung
+  highlighted (TIDAL's own synced lyrics first, then
+  [LRCLIB](https://lrclib.net), free and keyless; unsynced lyrics scroll
+  with the song's progress). Lyrics are cached in
+  `~/.config/tidal-shuffle/cache/lyrics.json`;
+* when a song has no lyrics (or press `l`), the **Alter Era** scene: the
+  Everforest-aqua digital rain of the sign-off animation with the logo
+  floating over it, bobbing, drifting and tilting, its shadow shrinking as
+  it rises. The rain comes to rest while the music is paused;
+* at the bottom, the log and the keys.
+
+`tidal-shuffle run --plain` (or `ui.screen: plain`) keeps the scrolling log
+instead. `ui.logo_file` points at your own `---BIG---` / `---SMALL---`
+braille art; `ui.lyrics`, `ui.lyrics_sources`, `ui.visualizer` and `ui.fps`
+tune the rest.
+
 **Keys.** While `tidal-shuffle run` is in front:
 
 | key | does |
@@ -81,6 +100,7 @@ simply follows your choice.
 | `space` (or ⏯) | pause / play TIDAL |
 | `n` (or ⏭) | skip to a fresh pick now |
 | `b` (or ⏮) | TIDAL's previous track |
+| `l` | lyrics / visualizer |
 | `q` | stop Tidal Shuffle |
 | `?` | list the keys |
 
@@ -242,7 +262,7 @@ pick asked for them.
 
 | command                         | what it does                                              |
 |---------------------------------|-----------------------------------------------------------|
-| `run`                           | follow TIDAL and keep picking                             |
+| `run [--plain]`                 | follow TIDAL and keep picking, with lyrics and visualizer |
 | `test`                          | plan once for the current song, play nothing              |
 | `next`                          | pick and start a next song right now                      |
 | `harvest "Title" "Artist"`      | run the Spotify engine once and list what it found        |

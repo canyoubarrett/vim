@@ -27,6 +27,12 @@ class FakeTrack:
         self.explicit = False
         self.available = True
         self.popularity = data.get("popularity", 50)
+        self._lyrics = data.get("lyrics")
+
+    def lyrics(self):
+        if not self._lyrics:
+            raise LookupError("MetadataNotAvailable: no lyrics for this track")
+        return SimpleNamespace(subtitles=self._lyrics, text="")
 
     def get_track_radio(self, limit=100):
         return self._session._radio(str(self.id), limit)
