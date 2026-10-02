@@ -50,12 +50,12 @@ with timeout of 5 seconds
         set vol to sound volume
         set tid to ""
         try
-            set tid to id of current track
+            set tid to (id of current track) as text
         end try
     end tell
 end timeout
 set AppleScript's text item delimiters to ASCII character 31
-return {ps, vol, tid} as text
+return {ps, vol as text, tid} as text
 """ % {"bid": SPOTIFY_BUNDLE}
 
 CURRENT_SCRIPT = GUARD + """
@@ -65,9 +65,9 @@ with timeout of 5 seconds
         set tn to ""
         set ta to ""
         try
-            set tid to id of current track
-            set tn to name of current track
-            set ta to artist of current track
+            set tid to (id of current track) as text
+            set tn to (name of current track) as text
+            set ta to (artist of current track) as text
         end try
         set ps to player state as string
     end tell
@@ -91,11 +91,26 @@ HIDE_SCRIPT = 'tell application "System Events" to set visible of process "Spoti
 
 HARVEST_SCRIPT = """
 -- Time is counted in 0.1 s ticks rather than with `current date`, which only
--- has one-second resolution and is a scripting addition (best kept outside
--- `tell` blocks).
+-- has one-second resolution. Pauses and text conversion go through the two
+-- small handlers below so they always run in this script, never inside
+-- Spotify's `tell` block.
+on pauseFor(secs)
+    delay secs
+end pauseFor
+
+on txt(v)
+    try
+        if v is missing value then return ""
+        return v as text
+    on error
+        return ""
+    end try
+end txt
+
 on harvest(seedURI, stationURI, wanted, stepTicks, firstTicks, adTicks, budgetTicks, skipDelay, origVol, muteIt, restoreIt, hideIt, useStation)
     set US to ASCII character 31
     set outLines to {}
+    set found to 0
     set ticks to 0
     tell application id "%(bid)s"
         if origVol < 0 then set origVol to sound volume
@@ -118,18 +133,18 @@ on harvest(seedURI, stationURI, wanted, stepTicks, firstTicks, adTicks, budgetTi
             tell application "System Events" to set visible of process "Spotify" to false
         end try
     end if
-    delay 1.0
+    my pauseFor(1.0)
     tell application id "%(bid)s"
         set prevId to seedURI
         set seedName to ""
         set seedArtist to ""
         try
-            set prevId to id of current track
-            set seedName to name of current track
-            set seedArtist to artist of current track
+            set prevId to my txt(id of current track)
+            set seedName to my txt(name of current track)
+            set seedArtist to my txt(artist of current track)
         end try
         set seedLine to "SEED" & US & prevId & US & seedName & US & seedArtist
-        repeat while (count of outLines) < wanted
+        repeat while found < wanted
             if ticks > budgetTicks then
                 set end of outLines to "ERR" & US & "time-budget"
                 exit repeat
@@ -140,16 +155,16 @@ on harvest(seedURI, stationURI, wanted, stepTicks, firstTicks, adTicks, budgetTi
             -- A freshly started station can take several seconds to load, so the
             -- first skip gets a longer window and is repeated while we wait.
             set limitTicks to stepTicks
-            if (count of outLines) = 0 then set limitTicks to firstTicks
+            if found = 0 then set limitTicks to firstTicks
             repeat
-                delay 0.1
+                my pauseFor(0.1)
                 set waited to waited + 1
                 try
-                    set curId to id of current track
+                    set curId to my txt(id of current track)
                 end try
                 if curId is not prevId then exit repeat
                 if waited >= limitTicks then exit repeat
-                if (count of outLines) = 0 and (waited mod stepTicks) = 0 then next track
+                if found = 0 and (waited mod stepTicks) = 0 then next track
             end repeat
             set ticks to ticks + waited
             if curId is prevId then
@@ -159,10 +174,10 @@ on harvest(seedURI, stationURI, wanted, stepTicks, firstTicks, adTicks, budgetTi
             if curId starts with "spotify:ad:" then
                 set adWaited to 0
                 repeat
-                    delay 0.5
+                    my pauseFor(0.5)
                     set adWaited to adWaited + 5
                     try
-                        set curId to id of current track
+                        set curId to my txt(id of current track)
                     end try
                     if curId does not start with "spotify:ad:" then exit repeat
                     if adWaited >= adTicks then exit repeat
@@ -173,16 +188,17 @@ on harvest(seedURI, stationURI, wanted, stepTicks, firstTicks, adTicks, budgetTi
                     exit repeat
                 end if
             end if
-            set n to name of current track
+            set n to my txt(name of current track)
             if n is "" then
-                delay 0.2
-                set n to name of current track
+                my pauseFor(0.2)
+                set n to my txt(name of current track)
             end if
-            set rec to curId & US & n & US & (artist of current track) & US & (album of current track) & US & (duration of current track) & US & (popularity of current track) & US & (album artist of current track)
+            set rec to curId & US & n & US & my txt(artist of current track) & US & my txt(album of current track) & US & my txt(duration of current track) & US & my txt(popularity of current track) & US & my txt(album artist of current track)
             set end of outLines to rec
+            set found to found + 1
             set prevId to curId
             if skipDelay > 0 then
-                delay skipDelay
+                my pauseFor(skipDelay)
                 set ticks to ticks + (skipDelay * 10)
             end if
         end repeat

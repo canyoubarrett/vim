@@ -45,7 +45,7 @@ class FakeSpotify:
             raise AppleScriptError("not running")
         if "return player state as string" in script and "harvest" not in script:
             return self.state
-        if "return {ps, vol, tid} as text" in script:
+        if "return {ps, vol as text, tid} as text" in script:
             return US.join([self.state, str(self.volume), self.current[0] if self.state != "stopped" else ""])
         if "return {tid, tn, ta, ps} as text" in script:
             return US.join([*self.current, self.state])

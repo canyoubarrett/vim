@@ -80,7 +80,7 @@ if 'is running) then return "not-running"' in script:
         save_spotify_state(sp)
         print("ok")
         sys.exit(0)
-    if "return {ps, vol, tid} as text" in script:
+    if "return {ps, vol as text, tid} as text" in script:
         log("osascript", "spotify state")
         print(US.join(["playing" if sp.get("playing") else "paused", str(sp.get("volume", 64)), "spotify:track:userprev"]))
         sys.exit(0)

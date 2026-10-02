@@ -112,6 +112,16 @@ def run_doctor(cfg: Optional[AppConfig], console: Console) -> None:
                  "installed" if spot else "not installed", "" if spot else "install Spotify to use the spotify-app source (optional)")
             osa = shutil.which("osascript") is not None
             _row(table, "osascript", osa, "ok" if osa else "missing")
+            if "spotify-app" in cfg.sources:
+                order = cfg.spotify.app.id_lookups
+                _row(table, "finding songs on Spotify", True, " → ".join(order))
+                if "spotify-ui" in order:
+                    from .spotify_ui import SpotifyUI
+
+                    ok, reason = SpotifyUI().available()
+                    _row(table, "Spotify search via the UI", ok, "Accessibility access granted" if ok else reason,
+                         "" if ok else "System Settings → Privacy & Security → Accessibility → enable your terminal, "
+                                       "then run `tidal-shuffle spotify-ui`")
         creds = cfg.spotify.has_api_credentials
         _row(table, "Spotify API", True if creds else None, "credentials set" if creds else "not configured (optional)",
              "" if creds else "spotify.client_id / client_secret in config when you have a developer app")
