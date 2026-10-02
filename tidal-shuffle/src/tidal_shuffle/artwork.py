@@ -1,10 +1,20 @@
-"""Album art for the TUI, drawn with half blocks.
+"""Album art for the TUI, drawn with block characters.
 
-Each terminal cell shows two pixels: "▀" in the top pixel's colour on the
-bottom pixel's colour, so a 12x6 cell area holds a 12x12 picture. Covers come
-from TIDAL (the album of the song playing), are fetched in the background and
-kept on disk; Pillow does the resizing. Without Pillow, or without a cover, a
-gradient tile with a note stands in.
+Two ways to draw a picture into terminal cells:
+
+* half blocks: each cell shows two pixels, "▀" in the top pixel's colour on
+  the bottom pixel's colour;
+* quadrant blocks (the default): each cell shows four pixels, 2x2, with the
+  quarter-block character (▘ ▝ ▖ ▗ ▚ ▞ ▌ ▐ ▀ ▄ ▙ ▟ ▛ ▜) whose two-colour split
+  matches them best; twice the horizontal detail of half blocks.
+
+In a 256-colour terminal (Terminal.app) the cover is first dithered
+(Floyd-Steinberg) to the 256-colour palette, so gradients and faces come out
+as fine grain instead of flat bands.
+
+Covers come from TIDAL (the album of the song playing), are fetched in the
+background and kept on disk; Pillow does the resizing. Without Pillow, or
+without a cover, a gradient tile with a note stands in.
 """
 
 from __future__ import annotations
@@ -94,22 +104,93 @@ class ArtworkService:
                     pass
         return Image.open(io.BytesIO(data)).convert("RGB")
 
-    def cells(self, key: str, image, width: int, height: int) -> list:
-        """The image as ``height`` rows of ``width`` half-block cells."""
-        memo = (key, width, height)
+    def cells(self, key: str, image, width: int, height: int, mode: str = "quadrant", dither: bool = False) -> list:
+        """The image as ``height`` rows of ``width`` cells."""
+        memo = (key, width, height, mode, dither)
         if memo in self._cells:
             return self._cells[memo]
-        grid = half_blocks(image, width, height)
+        draw = quadrant_blocks if mode == "quadrant" else half_blocks
+        grid = draw(image, width, height, dither=dither)
         if len(self._cells) > 50:
             self._cells.clear()
         self._cells[memo] = grid
         return grid
 
 
-def half_blocks(image, width: int, height: int) -> list:
-    """Rows of ("▀", top colour, False, bottom colour) cells for a PIL image."""
+_PALETTE_IMAGE = None
+
+
+def _palette_image():
+    """A Pillow palette image of the 240 fixed colours of the 256-colour palette
+    (the first 16 depend on the terminal's theme, so they are left out)."""
+    global _PALETTE_IMAGE
+    if _PALETTE_IMAGE is None:
+        Image = _pil()
+        cube = (0, 95, 135, 175, 215, 255)
+        colours = [(cube[r], cube[g], cube[b]) for r in range(6) for g in range(6) for b in range(6)]
+        colours += [(8 + 10 * i,) * 3 for i in range(24)]
+        colours += [colours[0]] * (256 - len(colours))
+        pal = Image.new("P", (1, 1))
+        pal.putpalette([v for c in colours for v in c])
+        _PALETTE_IMAGE = pal
+    return _PALETTE_IMAGE
+
+
+def _prepare(image, w: int, h: int, dither: bool):
+    """Resize to w x h pixels; dithered to the 256-colour palette if asked."""
     Image = _pil()
-    img = image.resize((max(1, width), max(2, height * 2)), Image.LANCZOS if hasattr(Image, "LANCZOS") else 1)
+    img = image.convert("RGB").resize((max(1, w), max(1, h)), Image.LANCZOS if hasattr(Image, "LANCZOS") else 1)
+    if dither:
+        fs = getattr(getattr(Image, "Dither", Image), "FLOYDSTEINBERG", 3)
+        img = img.quantize(palette=_palette_image(), dither=fs).convert("RGB")
+    return img
+
+
+# quadrant characters by which quarters show the foreground: bits TL=8, TR=4, BL=2, BR=1
+QUADRANTS = {0b1000: "▘", 0b0100: "▝", 0b0010: "▖", 0b0001: "▗", 0b1100: "▀", 0b0011: "▄",
+             0b1010: "▌", 0b0101: "▐", 0b1001: "▚", 0b0110: "▞", 0b1110: "▛", 0b1101: "▜",
+             0b1011: "▙", 0b0111: "▟", 0b1111: "█"}
+# the seven ways to split four pixels into two groups (and the complements are the same split)
+_SPLITS = (0b1000, 0b0100, 0b0010, 0b0001, 0b1100, 0b1010, 0b1001)
+
+
+def _mean(cols: list) -> Color:
+    n = len(cols)
+    return (sum(c[0] for c in cols) // n, sum(c[1] for c in cols) // n, sum(c[2] for c in cols) // n)
+
+
+def quadrant_blocks(image, width: int, height: int, dither: bool = False) -> list:
+    """Rows of cells for a PIL image at 2x2 pixels per cell: for each cell, the
+    split of its four pixels into two colours that loses the least."""
+    img = _prepare(image, width * 2, height * 2, dither)
+    px = img.load()
+    rows = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            quad = (tuple(px[2 * x, 2 * y][:3]), tuple(px[2 * x + 1, 2 * y][:3]),
+                    tuple(px[2 * x, 2 * y + 1][:3]), tuple(px[2 * x + 1, 2 * y + 1][:3]))
+            best = None
+            for mask in _SPLITS:
+                fg = [quad[i] for i in range(4) if mask & (8 >> i)]
+                bg = [quad[i] for i in range(4) if not mask & (8 >> i)]
+                cf, cb = _mean(fg), _mean(bg)
+                err = sum((p[0] - cf[0]) ** 2 + (p[1] - cf[1]) ** 2 + (p[2] - cf[2]) ** 2 for p in fg)
+                err += sum((p[0] - cb[0]) ** 2 + (p[1] - cb[1]) ** 2 + (p[2] - cb[2]) ** 2 for p in bg)
+                if best is None or err < best[0]:
+                    best = (err, mask, cf, cb)
+            _, mask, cf, cb = best
+            if cf == cb:
+                row.append(("▀", cf, False, cb))
+            else:
+                row.append((QUADRANTS[mask], cf, False, cb))
+        rows.append(row)
+    return rows
+
+
+def half_blocks(image, width: int, height: int, dither: bool = False) -> list:
+    """Rows of ("▀", top colour, False, bottom colour) cells for a PIL image."""
+    img = _prepare(image, width, height * 2, dither)
     px = img.load()
     rows = []
     for y in range(height):

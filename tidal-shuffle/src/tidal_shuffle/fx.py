@@ -71,9 +71,10 @@ class Backdrop:
     ones (eased, so it never changes all at once). Paused, it falls in slow
     motion."""
 
-    def __init__(self, palette: dict, light: bool = False):
+    def __init__(self, palette: dict, light: bool = False, visibility: float = 0.3):
         self.p = palette
         self.light = light                       # Catppuccin Latte: a pale sky
+        self.visibility = max(0.0, min(1.0, visibility))   # 0: invisible .. 1: plain to see
         self._t = 0.0
         self._last: Optional[float] = None
         self._density = 0.75
@@ -99,8 +100,10 @@ class Backdrop:
         for y in range(h):
             bg = lerp(top, bottom, y / max(1, h - 1))
             rows.append([[" ", None, False, bg] for _ in range(w)])
-        far = lerp(top, p["overlay0"], 0.55 if not self.light else 0.35)
-        near = lerp(p["overlay2"], p["sky"], 0.25)
+        # faint by default: each drop only a little lighter than the sky right behind it
+        v = self.visibility
+        far = (p["overlay0"], 0.35 * v)
+        near = (lerp(p["overlay2"], p["sky"], 0.25), 0.55 * v)
         layers = (
             # count, speed (dots/s), length (dots), colour, slant (dots across per dot down)
             (w * h / 7.0, 30.0, 3, far, 0.10),
@@ -130,7 +133,8 @@ class Backdrop:
                                 color[key] = col
         for (cy, cx), b in bits.items():
             cell = rows[cy][cx]
-            cell[0], cell[1] = chr(0x2800 + b), color[(cy, cx)]
+            target, k = color[(cy, cx)]
+            cell[0], cell[1] = chr(0x2800 + b), lerp(cell[3], target, k)
         return rows
 
 

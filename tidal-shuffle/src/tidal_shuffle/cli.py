@@ -362,6 +362,10 @@ def _start_controls(cfg: AppConfig, loop, screen=None) -> list:
             say("the logo and lyrics are part of the full-screen view (leave out --plain)")
         elif cmd == "presets":
             say("pick a preset with --preset NAME, or in the full-screen view (leave out --plain)")
+        elif cmd == "art":
+            say("the album cover is part of the full-screen view (leave out --plain)")
+        elif cmd == "art":
+            say("the album cover is part of the full-screen view (leave out --plain)")
         else:
             loop.post(cmd)
 

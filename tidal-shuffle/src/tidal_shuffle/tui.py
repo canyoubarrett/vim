@@ -42,11 +42,12 @@ from .lyrics import Lyrics, LyricsService
 from .theme import Theme, theme as make_theme
 from .visualizer import LogoScene, lerp, smoothstep
 
-KEYS_LINE = "space play/pause · n next pick · f flow · p presets · l lyrics · q quit"
+KEYS_LINE = "space play/pause · n next pick · f flow · p presets · l lyrics · a cover · q quit"
 
 # toolbar chips: (key, label, action); actions "cmd:<loop command>" or "ui:<screen action>"
 CHIPS = [("space", "play/pause", "cmd:playpause"), ("n", "next", "cmd:next"), ("f", "flow", "cmd:flow"),
-         ("p", "presets", "ui:presets"), ("l", "lyrics", "ui:view"), ("q", "quit", "cmd:quit")]
+         ("p", "presets", "ui:presets"), ("l", "lyrics", "ui:view"), ("a", "cover", "ui:art"),
+         ("q", "quit", "cmd:quit")]
 HEADER_H = 7
 
 # the preset menu's sections, in order; presets of your own come last
@@ -433,7 +434,8 @@ class ShuffleTUI:
             scene.logo, scene.glow, scene.shadow, scene.bg = self.th.logo, self.th.logo_glow, self.th.shadow, self.th.bg
         self.scene = scene
         ui = getattr(config, "ui", None)
-        self.backdrop = Backdrop(self.th.p, light=self.th.name == "latte") if getattr(ui, "backdrop", True) else None
+        self.backdrop = (Backdrop(self.th.p, light=self.th.name == "latte", visibility=float(getattr(ui, "rain", 0.3)))
+                         if getattr(ui, "backdrop", True) else None)
         self.glass = float(getattr(ui, "glass", 0.22))
         # transitions: (value, velocity) springs, so nothing ever jumps
         self._layout = [0.0, 0.0]     # 0: the logo alone, 1: logo and lyrics side by side
@@ -449,6 +451,9 @@ class ShuffleTUI:
         self._art_prev = None
         self._art_grid = None
         self._art_since = 0.0
+        self._art_mode = getattr(ui, "art_blocks", "quadrant")
+        self.cover_view = False       # the cover, big, in place of the logo (a)
+        self._cover = [0.0, 0.0]
         self.artwork = artwork
         self.history = history if history is not None else getattr(loop, "history", None)
         self.post = post or getattr(loop, "post", None) or (lambda cmd: None)
@@ -473,6 +478,10 @@ class ShuffleTUI:
         self.view = "logo" if self.view == "auto" else "auto"
         self.log("showing the logo" if self.view == "logo" else "showing the lyrics")
 
+    def toggle_cover(self) -> None:
+        self.cover_view = not self.cover_view
+        self.log("showing the album cover" if self.cover_view else "showing the logo")
+
     def _preset_names(self) -> list:
         """Preset names in menu order (the cursor walks this list)."""
         return [n for _, group in preset_sections(self.presets()) for n in group]
@@ -496,6 +505,8 @@ class ShuffleTUI:
             self.menu_open = False if self.menu_open else (self.open_menu() or True)
         elif kind == "ui" and arg == "view":
             self.toggle_view()
+        elif kind == "ui" and arg == "art":
+            self.toggle_cover()
         elif kind == "preset":
             self.choose(arg)
         elif kind == "menu" and arg == "close":
@@ -519,6 +530,9 @@ class ShuffleTUI:
             return True
         if cmd == "view":
             self.toggle_view()
+            return True
+        if cmd == "art":
+            self.toggle_cover()
             return True
         if self.menu_open:
             names = self._preset_names()
@@ -627,8 +641,9 @@ class ShuffleTUI:
             key = ("placeholder", w)
             grid = placeholder(w, rows, p["mauve"], p["blue"], p["crust"])
         else:
-            key = (song, id(img), w)
-            grid = self.artwork.cells(song, img, w, rows)
+            dither = _DEPTH["system"] == "256"
+            key = (song, id(img), w, dither)
+            grid = self.artwork.cells(song, img, w, rows, mode=self._art_mode, dither=dither)
         now = self._clock()
         if key != self._art_key:
             if self._art_grid is not None and len(self._art_grid) == rows:
@@ -714,6 +729,37 @@ class ShuffleTUI:
         return self._panel(GridView(lambda w, h: scene.frame(w, h, self._clock(), playing=live)), caption,
                            padding=(0, 0))
 
+    def cover_panel(self) -> Panel:
+        """The cover of the song playing, as big as the panel allows (a)."""
+        from .artwork import placeholder
+
+        p = self.th.p
+        cur = self.loop.state.current
+        img = None
+        song = f"{cur.artist}|{cur.title}" if cur is not None else ""
+        if cur is not None and self.artwork is not None:
+            img = self.artwork.get(song, cur.tidal_id, cur.title, cur.artist)
+        have = img is not None and img != "pending"
+        artwork = self.artwork
+        mode = self._art_mode
+
+        def grid(w: int, h: int) -> list:
+            rows = max(1, min(h, w // 2))                 # square: a cell is about twice as tall as wide
+            cols = rows * 2
+            if have:
+                pic = artwork.cells(song, img, cols, rows, mode=mode, dither=_DEPTH["system"] == "256")
+            else:
+                pic = placeholder(cols, rows, p["mauve"], p["blue"], p["crust"])
+            left, top = (w - cols) // 2, (h - rows) // 2
+            blank = [(" ", None)] * w
+            out = [list(blank) for _ in range(h)]
+            for r, row in enumerate(pic):
+                out[top + r][left:left + cols] = row
+            return out
+        album = (cur.album if cur is not None and cur.album else "")
+        title = "Cover" + (f" · {album}" if album else "") + ("" if have else (" · loading…" if img == "pending" else " · none"))
+        return self._panel(GridView(grid), title, subtitle="a for the logo", padding=(0, 0))
+
     def lyrics_panel(self, lyr: Lyrics, pos: Optional[float], duration: Optional[float], alpha: float) -> Panel:
         title = f"Lyrics · {lyr.source}" + (" · timing estimated" if lyr.estimated else ("" if lyr.synced else " (not synced)"))
         th = self.th
@@ -784,11 +830,13 @@ class ShuffleTUI:
             self._layout = [self._layout_goal, 0.0]
             self._content = [1.0 if showing_want and self._layout_goal else 0.0, 0.0]
             self._menu = [menu_goal, 0.0]
+            self._cover = [1.0 if self.cover_view else 0.0, 0.0]
         else:
             dt = min(dt, 0.25)
             self._layout = list(spring(*self._layout, self._layout_goal, dt, 5.5))
             self._content = list(spring(*self._content, content_goal, dt, 24.0 if content_goal < 0.5 else 9.0))
             self._menu = list(spring(*self._menu, menu_goal, dt, 14.0))
+            self._cover = list(spring(*self._cover, 1.0 if self.cover_view else 0.0, dt, 10.0))
         if want is None and self._content[0] < 0.01 and self._layout[0] < 0.01:
             self._shown = None
 
@@ -900,6 +948,9 @@ class ShuffleTUI:
             logo_w = int(round(main_w + (split - main_w) * L))
             lyr_x, lyr_w = x + split + gap, main_w - split - gap
         out.insert(0, (self.logo_panel(self.caption() if self._shown is None else "Alter Era"), x, y, logo_w, height, 1.0))
+        c = max(0.0, min(1.0, self._cover[0]))
+        if c > 0.01:                                   # the cover fades in over the logo
+            out.insert(1, (self.cover_panel(), x, y, logo_w, height, c))
         if self._shown is not None and L > 0.01:
             pos, duration = self._shown_pos
             alpha = max(0.0, min(1.0, self._content[0]))

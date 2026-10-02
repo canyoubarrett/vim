@@ -92,7 +92,9 @@ class UiConfig:
     logo_file: str = ""           # an .svg (traced into braille) or ---BIG--- / ---SMALL--- braille art
     cell_aspect: float = 0.5      # a terminal cell's width / height, so the logo keeps its proportions
     artwork: bool = True          # the album cover in the header (needs Pillow)
+    art_blocks: str = "quadrant"  # quadrant: 2x2 pixels per cell | half: 1x2 (for fonts without quadrants)
     backdrop: bool = True         # rain behind the panels
+    rain: float = 0.3             # how visible the rain is: 0 (not at all) .. 1 (plain to see)
     glass: float = 0.22           # how much of the rain shows through the panels (0 = none)
     track_poll: float = 0.5       # how often to check for a new song while the screen is up (s)
     mouse: bool = True            # click the key chips and presets (hold Option/Fn to select text)
@@ -361,8 +363,10 @@ ui:
   color: auto               # auto | truecolor | 256 | 16 (force it if colours look wrong or missing)
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
-  artwork: true             # the album cover in the header
+  artwork: true             # the album cover in the header (press a for it big)
+  art_blocks: quadrant      # quadrant: 2x2 pixels per cell | half: 1x2, if your font lacks ▚ ▞ ▙ ▟
   backdrop: true            # rain falling behind the panels
+  rain: 0.3                 # how visible the rain is: 0 (not at all) to 1 (plain to see)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up
   mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)
@@ -639,7 +643,9 @@ def _build(data: Mapping) -> AppConfig:
         "logo_file": lambda v, n: str(v or ""),
         "cell_aspect": lambda v, n: _as_number(v, n, float, 0.2, 1.25),
         "artwork": _as_bool,
+        "art_blocks": lambda v, n: _as_choice(str(v).lower(), n, ("quadrant", "half")),
         "backdrop": _as_bool,
+        "rain": lambda v, n: _as_number(v, n, float, 0.0, 1.0),
         "glass": lambda v, n: _as_number(v, n, float, 0.0, 0.6),
         "track_poll": lambda v, n: _as_number(v, n, float, 0.2, 10),
         "mouse": _as_bool,

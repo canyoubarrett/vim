@@ -75,6 +75,10 @@ class Theme:
     p: dict = field(default_factory=dict, compare=False)   # the whole flavor: p["peach"], p["surface0"], ...
 
 
+def _mix(a: Color, b: Color, t: float) -> Color:
+    return (round(a[0] + (b[0] - a[0]) * t), round(a[1] + (b[1] - a[1]) * t), round(a[2] + (b[2] - a[2]) * t))
+
+
 def theme(flavor: str = "mocha") -> Theme:
     p = {k: hex_rgb(v) for k, v in PALETTES.get(flavor, PALETTES["mocha"]).items()}
     return Theme(
@@ -82,5 +86,7 @@ def theme(flavor: str = "mocha") -> Theme:
         bg=p["base"], border=p["surface1"], title=p["mauve"], text=p["text"], subtle=p["subtext0"],
         faint=p["overlay0"], past=p["overlay1"], current_bg=p["mauve"], current_fg=p["crust"],
         playing=p["green"], paused=p["yellow"], bar=p["lavender"], bar_rest=p["surface1"], knob=p["pink"],
-        logo=p["mauve"], logo_glow=p["pink"], shadow=p["surface1"], p=p,
+        # the logo: a light, greyed lilac, breathing towards a paler one
+        logo=_mix(p["mauve"], p["subtext1"], 0.55), logo_glow=_mix(p["mauve"], p["text"], 0.7),
+        shadow=p["surface1"], p=p,
     )

@@ -539,3 +539,77 @@ def test_256_colour_terminals_get_the_theme_matched_to_their_palette():
         assert f"48;5;{nearest_256(MOCHA.bg)}" in out or "Midnight City" in c.export_text()
     finally:
         set_color_depth("truecolor")
+
+
+def test_rain_is_faint_and_adjustable():
+    from tidal_shuffle.fx import Backdrop
+
+    def brightest(vis):
+        rows = Backdrop(MOCHA.p, visibility=vis).frame(60, 20, 1.0)
+        return max(sum(c[1]) - sum(c[3]) for r in rows for c in r if c[1])
+    assert brightest(0.3) < 90                       # barely lighter than the sky behind it
+    assert brightest(1.0) > brightest(0.3) * 2
+    off = Backdrop(MOCHA.p, visibility=0.0).frame(60, 20, 1.0)
+    assert all(c[1] is None or sum(c[1]) - sum(c[3]) < 30 for r in off for c in r)
+
+
+def test_quadrant_blocks_double_the_detail():
+    from PIL import Image
+
+    from tidal_shuffle.artwork import QUADRANTS, half_blocks, quadrant_blocks
+
+    img = Image.new("RGB", (4, 2), (0, 0, 0))
+    img.putpixel((0, 0), (255, 255, 255))            # one bright pixel in the top-left corner
+    img.putpixel((3, 1), (255, 0, 0))
+    cell = quadrant_blocks(img, 2, 1)[0]
+    assert cell[0][0] == "▘" and cell[0][1] == (255, 255, 255) and cell[0][3] == (0, 0, 0)
+    assert cell[1][0] in ("▗", "▛") and len(QUADRANTS) == 15
+    # a two-colour cell is reproduced exactly; half blocks cannot split it sideways
+    left = Image.new("RGB", (2, 2), (0, 0, 255))
+    left.putpixel((1, 0), (255, 255, 0))
+    left.putpixel((1, 1), (255, 255, 0))
+    q = quadrant_blocks(left, 1, 1)[0][0]
+    assert q[0] in ("▌", "▐") and {q[1], q[3]} == {(0, 0, 255), (255, 255, 0)}
+    h = half_blocks(left, 1, 1)[0][0]
+    assert h[1] not in ((0, 0, 255), (255, 255, 0))  # blended: the detail is lost
+
+
+def test_dithering_to_the_256_colour_palette():
+    from PIL import Image
+
+    from tidal_shuffle.artwork import quadrant_blocks
+    from tidal_shuffle.tui import _PALETTE_256
+
+    grad = Image.new("RGB", (64, 8))
+    for x in range(64):
+        for y in range(8):
+            grad.putpixel((x, y), (40 + x, 30 + x // 2, 90 + x))
+    pal = {c for _, c in _PALETTE_256}
+    flat = quadrant_blocks(grad, 32, 4)
+    dith = quadrant_blocks(grad, 32, 4, dither=True)
+    colours = lambda g: {c[1] for r in g for c in r} | {c[3] for r in g for c in r}
+    assert colours(dith) <= pal | {tuple(c) for c in colours(dith)}   # mixed only within a cell
+    assert len(colours(dith)) > 3 and colours(flat) != colours(dith)
+
+
+def test_big_cover_view_fades_in_over_the_logo():
+    import types as _t
+
+    from PIL import Image
+
+    tui, frame, clock = stepping_tui(None)
+    img = Image.new("RGB", (40, 40), (200, 50, 100))
+    from tidal_shuffle.artwork import half_blocks
+    tui.artwork = _t.SimpleNamespace(get=lambda *a: img,
+                                     cells=lambda k, im, w, h, mode="quadrant", dither=False: half_blocks(im, w, h))
+    frame()
+    assert tui.handle_input("art") and tui.cover_view
+    frame()
+    assert 0 < tui._cover[0] < 1                      # fading in, not cut
+    out = frame(20)
+    assert "Cover · Hurry Up" in out and tui._cover[0] > 0.97
+    covers = [r for r in tui.regions(120, 40) if "Cover" in str(getattr(r[0], "title", ""))]
+    assert covers and covers[0][3] > 30
+    tui.handle_input("art")
+    frame(20)
+    assert "Cover" not in frame() and "Alter Era" in frame()

@@ -78,7 +78,9 @@ simply follows your choice.
 [Catppuccin](https://catppuccin.com) colours (Mocha; `ui.theme: macchiato`,
 `frappe` or `latte` for the other flavors):
 
-* at the top, the album cover (drawn with half-block characters, cached in
+* at the top, the album cover (drawn with quarter-block characters, 2x2
+  pixels per cell, and dithered to the palette in 256-colour terminals such
+  as Terminal.app; `ui.art_blocks: half` if your font lacks ▚ ▞ ▙ ▟; cached in
   `~/.config/tidal-shuffle/cache/art`; `ui.artwork: false` turns it off),
   the song playing with a ▶ PLAYING / ⏸ PAUSED badge, a progress bar, the
   next pick, and the flow with its target energy as a meter;
@@ -86,9 +88,11 @@ simply follows your choice.
   the near ones brighter and faster, slanting a little in the wind, drawn in
   braille dots so they fall smoothly. It is a drizzle for calm songs and
   heavier for energetic ones (following the flow's target energy), and it
-  falls in slow motion while paused. It stays behind the panels: inside
-  them there is no rain, only a faint tint of the sky (`ui.backdrop: false`
-  turns the rain off, `ui.glass` sets the tint, 0 to 0.6);
+  falls in slow motion while paused. It is faint, barely lighter than the
+  sky (`ui.rain`, 0 to 1, sets how visible; 0.3 by default), and stays
+  behind the panels: inside them there is no rain, only a faint tint of the
+  sky (`ui.backdrop: false` turns the rain off, `ui.glass` sets the tint,
+  0 to 0.6);
 * on the left, the Alter Era logo, as big as the panel allows, floating: it
   bobs, drifts and tilts, its colour breathes, and its shadow shrinks as it
   rises. It is traced from the
@@ -168,6 +172,7 @@ tune the rest.
 | `f` | next shuffle flow (radio → rising → falling → steady → soundscape → vibe) |
 | `p` | open / close the presets menu (↑ ↓ or wheel, Enter or click to apply, Esc to close) |
 | `l` | logo alone / logo and lyrics |
+| `a` | the album cover, big, in place of the logo (and back) |
 | `q` | stop Tidal Shuffle |
 | `?` | list the keys |
 
