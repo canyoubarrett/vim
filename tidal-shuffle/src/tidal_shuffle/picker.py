@@ -12,7 +12,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
-from .matching import normalize, primary_artist
+from .matching import shares_artist
 from .models import Candidate
 
 STRATEGIES = ("top", "weighted", "random", "discovery")
@@ -34,8 +34,6 @@ class PickContext:
     is_explicit: Optional[Callable[[Candidate], bool]] = None
 
 
-def _artist_key(artist: Optional[str]) -> str:
-    return normalize(primary_artist(artist or ""))
 
 
 def _passes_hard_filters(c: Candidate, ctx: PickContext) -> bool:
@@ -60,14 +58,13 @@ def _in_cooldown(c: Candidate, ctx: PickContext) -> bool:
         return False
     if ctx.allow_seed_artist and _is_seed_artist(c, ctx):
         return False  # you asked for more from the artist playing now
-    window = [_artist_key(a) for a in ctx.recent_artists[-ctx.artist_cooldown:]]
-    return _artist_key(c.artist) in window
+    return shares_artist(c.artist, ctx.recent_artists[-ctx.artist_cooldown:])
 
 
 def _is_seed_artist(c: Candidate, ctx: PickContext) -> bool:
     if not ctx.seed_artist:
         return False
-    return _artist_key(c.artist) == _artist_key(ctx.seed_artist)
+    return shares_artist(c.artist, ctx.seed_artist)
 
 
 def filter_candidates(candidates: Sequence[Candidate], ctx: PickContext) -> tuple[list[Candidate], str]:
@@ -76,11 +73,13 @@ def filter_candidates(candidates: Sequence[Candidate], ctx: PickContext) -> tupl
     Returns the surviving candidates and a short description of which
     relaxation level was needed (``""`` when no relaxation was necessary).
     """
-    base = [c for c in candidates if _passes_hard_filters(c, ctx)]
+    # Never the artist playing now, back to back (unless allow_seed_artist):
+    # that rule is hard and is not relaxed below.
+    base = [c for c in candidates if _passes_hard_filters(c, ctx)
+            and (ctx.allow_seed_artist or not _is_seed_artist(c, ctx))]
     ladder: list[tuple[str, Callable[[Candidate], bool]]] = [
-        ("", lambda c: not _is_recent(c, ctx) and not _in_cooldown(c, ctx) and (ctx.allow_seed_artist or not _is_seed_artist(c, ctx))),
-        ("ignoring artist cooldown", lambda c: not _is_recent(c, ctx) and (ctx.allow_seed_artist or not _is_seed_artist(c, ctx))),
-        ("allowing the seed artist", lambda c: not _is_recent(c, ctx)),
+        ("", lambda c: not _is_recent(c, ctx) and not _in_cooldown(c, ctx)),
+        ("ignoring artist cooldown", lambda c: not _is_recent(c, ctx)),
         ("allowing repeats", lambda c: True),
     ]
     for note, keep in ladder:

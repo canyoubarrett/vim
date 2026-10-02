@@ -163,3 +163,25 @@ def test_two_candidates_for_one_tidal_track_make_one_pick(tmp_path):
     eng = make_engine(tmp_path, [src], {"shuffle": {"strategy": "top", "lookahead": 3}}, Cat())
     plan = eng.plan(Seed("Seed", "Someone"))
     assert [p.track.id for p in plan.picks] == ["T9", "t-Third"]
+
+
+def test_tidal_match_crediting_the_artist_playing_now_is_skipped(tmp_path):
+    class Credits(FakeCatalog):
+        def match(self, c):
+            t = super().match(c)
+            if c.title == "Remix":
+                t.artist, t.artists = "DJ Someone", ["DJ Someone", "Seed Artist"]
+            return t
+    src = StaticSource([cand("Remix", "DJ Someone", 0.95), cand("B", "B1"), cand("C", "C1")], name="spotify-app")
+    eng = make_engine(tmp_path, [src], {"shuffle": {"strategy": "top", "lookahead": 1}}, catalog=Credits())
+    plan = eng.plan(Seed("Seed", "Seed Artist"))
+    assert plan.primary.track.title == "B"
+
+
+def test_radio_of_only_the_same_artist_falls_back_to_the_next_source(tmp_path):
+    same = StaticSource([cand(f"S{i}", "Seed Artist") for i in range(5)], name="spotify-app")
+    lastfm = StaticSource([cand("Other", "Someone Else")], name="lastfm")
+    eng = make_engine(tmp_path, [same, lastfm], {"shuffle": {"strategy": "top", "lookahead": 1}})
+    plan = eng.plan(Seed("Seed", "Seed Artist"))
+    assert plan.primary.track.title == "Other"
+    assert "trying the other sources too" in plan.notes

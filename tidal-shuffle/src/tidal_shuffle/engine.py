@@ -9,7 +9,7 @@ from typing import Callable, Optional, Protocol, Sequence
 
 from .config import AppConfig
 from .history import HistoryStore
-from .matching import looks_like_knockoff, same_song
+from .matching import looks_like_knockoff, same_song, shares_artist
 from .models import Candidate, Pick, Seed, TidalTrack
 from .picker import PickContext, order_candidates
 from .sources.base import Source, dedupe
@@ -85,10 +85,14 @@ class Engine:
             return seeds[:5]
         return [current]
 
-    def _gather(self, seeds: list[Seed], plan: Plan) -> list[Candidate]:
+    def _gather(self, seeds: list[Seed], plan: Plan, everything: bool = False) -> list[Candidate]:
+        """Candidates from the sources in order, stopping at the first that gives
+        enough (unless blending); ``everything`` asks the sources not tried yet."""
         shuffle = self.config.shuffle
         pool: list[Candidate] = []
         for src in self.sources:
+            if everything and src.name in plan.sources_tried:
+                continue
             ok, reason = src.available()
             if not ok:
                 if src.name not in self._unavailable_reported:
@@ -108,7 +112,7 @@ class Engine:
                 self.log(f"source {src.name}: {len(cands)} candidates")
                 plan.source_used = plan.source_used or src.name
             pool.extend(cands)
-            if not shuffle.blend and len(pool) >= 3:
+            if not everything and not shuffle.blend and len(pool) >= 3:
                 break
         return pool
 
@@ -138,6 +142,49 @@ class Engine:
             allow_explicit=shuffle.allow_explicit,
         )
 
+    def _choose(self, pool: list[Candidate], ctx: PickContext, plan: Plan) -> None:
+        """Order the pool and match it on TIDAL until enough picks are found."""
+        plan.candidates_considered = len(pool)
+        plan.notes = [n for n in plan.notes if not n.startswith(("none of ", "no candidates", "allowing", "ignoring", "nothing"))]
+        if not pool:
+            plan.notes.append("no candidates from any source")
+            return
+        ordered, note = order_candidates(pool, ctx, self.config.shuffle.strategy, self.rng)
+        if note:
+            plan.notes.append(note)
+        wanted = max(1, self.config.shuffle.lookahead)
+        tried = 0
+        seen_ids: set[str] = {p.track.id for p in plan.picks}
+        allow_repeats = note == "allowing repeats"
+        for cand in ordered:
+            if len(plan.picks) >= wanted:
+                break
+            tried += 1
+            try:
+                track = self.catalog.match(cand)
+            except Exception as e:
+                self.log(f"TIDAL match failed for {cand.label()}: {e}")
+                track = None
+            if track is None or track.id in seen_ids:
+                continue  # unknown on TIDAL, or the same TIDAL track as an earlier pick
+            if not allow_repeats and (track.id in ctx.recent_tidal_ids or track.key in ctx.recent_keys):
+                continue  # heard recently under a slightly different title ("... (Remastered)")
+            if not ctx.allow_seed_artist and ctx.seed_artist and \
+                    shares_artist(track.artists or [track.artist], ctx.seed_artist):
+                continue  # TIDAL credits the artist playing now: never back to back
+            if not self.config.shuffle.allow_explicit and track.explicit:
+                continue
+            if track.duration is not None and not (self.config.shuffle.min_duration <= track.duration <= self.config.shuffle.max_duration):
+                continue
+            cand.tidal_id = track.id
+            seen_ids.add(track.id)
+            plan.picks.append(Pick(candidate=cand, track=track,
+                                   reason=f"{cand.source} #{cand.rank + 1}, score {cand.score:.2f}"))
+            if tried > wanted * 8:
+                break
+        if not plan.picks:
+            plan.notes.append(f"none of {tried} candidates could be found on TIDAL")
+
     def plan(self, current: Seed, anchor: Optional[Seed] = None, recent: Sequence[Seed] = (),
              exclude_keys: Optional[set] = None) -> Plan:
         """Decide what to play after ``current``."""
@@ -153,46 +200,14 @@ class Engine:
         seeds = self.effective_seeds(current, anchor, recent)
         # Never offer the song now playing, the seeds, or the last few songs heard.
         avoid = [current] + [s for s in seeds if s is not current] + list(recent)[-3:]
-        pool = self._clean(self._gather(seeds, plan), avoid, exclude_keys)
-        plan.candidates_considered = len(pool)
-        if not pool:
-            plan.notes.append("no candidates from any source")
-            plan.elapsed = time.monotonic() - started
-            return plan
-
         ctx = self._context(current)
-        ordered, note = order_candidates(pool, ctx, self.config.shuffle.strategy, self.rng)
-        if note:
-            plan.notes.append(note)
-
-        wanted = max(1, self.config.shuffle.lookahead)
-        tried = 0
-        seen_ids: set[str] = set()
-        allow_repeats = note == "allowing repeats"
-        for cand in ordered:
-            if len(plan.picks) >= wanted:
-                break
-            tried += 1
-            try:
-                track = self.catalog.match(cand)
-            except Exception as e:
-                self.log(f"TIDAL match failed for {cand.label()}: {e}")
-                track = None
-            if track is None or track.id in seen_ids:
-                continue  # unknown on TIDAL, or the same TIDAL track as an earlier pick
-            if not allow_repeats and (track.id in ctx.recent_tidal_ids or track.key in ctx.recent_keys):
-                continue  # heard recently under a slightly different title ("... (Remastered)")
-            if not self.config.shuffle.allow_explicit and track.explicit:
-                continue
-            if track.duration is not None and not (self.config.shuffle.min_duration <= track.duration <= self.config.shuffle.max_duration):
-                continue
-            cand.tidal_id = track.id
-            seen_ids.add(track.id)
-            plan.picks.append(Pick(candidate=cand, track=track,
-                                   reason=f"{cand.source} #{cand.rank + 1}, score {cand.score:.2f}"))
-            if tried > wanted * 8:
-                break
-        if not plan.picks:
-            plan.notes.append(f"none of {tried} candidates could be found on TIDAL")
+        raw = self._gather(seeds, plan)
+        self._choose(self._clean(raw, avoid, exclude_keys), ctx, plan)
+        if not plan.picks and any(src.name not in plan.sources_tried for src in self.sources):
+            # e.g. the Spotify radio was all the same artist or all heard recently
+            more = self._gather(seeds, plan, everything=True)
+            if more:
+                plan.notes.append("trying the other sources too")
+                self._choose(self._clean(raw + more, avoid, exclude_keys), ctx, plan)
         plan.elapsed = time.monotonic() - started
         return plan

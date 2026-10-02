@@ -138,3 +138,14 @@ def test_exact_version_wins_ties():
     a = score_match("Shine On You Crazy Diamond (Pts. 6-9)", "Pink Floyd", "Shine On You Crazy Diamond (Pts. 6-9)", ["Pink Floyd"])
     b = score_match("Shine On You Crazy Diamond (Pts. 6-9)", "Pink Floyd", "Shine On You Crazy Diamond (Pts. 1-5)", ["Pink Floyd"])
     assert a > b
+
+
+def test_shares_artist():
+    from tidal_shuffle.matching import shares_artist
+    assert shares_artist("Santana feat. Buddy Miles", "Buddy Miles")
+    assert shares_artist("The Who", "Who")
+    assert shares_artist("Drake, Rihanna", "Rihanna")
+    assert shares_artist(["DJ X", "Seed Artist"], "Seed Artist")
+    assert not shares_artist("Miles Davis", "Buddy Miles")
+    assert not shares_artist("Simon & Garfunkel", "Paul Simon")
+    assert not shares_artist("", "Buddy Miles")

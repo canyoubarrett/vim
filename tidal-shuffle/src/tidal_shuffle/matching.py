@@ -219,6 +219,25 @@ def artist_similarity(candidate_artist: str, track_artists: Sequence[str]) -> fl
     return best
 
 
+def artist_names(*credits: str) -> set[str]:
+    """Every individual artist named in the credits, normalized ("The" dropped)."""
+    names: set[str] = set()
+    for credit in credits:
+        for name in split_artists(credit or ""):
+            n = _strip_the(name)
+            if n:
+                names.add(n)
+    return names
+
+
+def shares_artist(a, b) -> bool:
+    """Do two songs share any credited artist? ``a``/``b`` are a credit string
+    or a list of credits ("Santana feat. Buddy Miles" shares one with "Buddy Miles")."""
+    la = [a] if isinstance(a, str) else list(a or [])
+    lb = [b] if isinstance(b, str) else list(b or [])
+    return bool(artist_names(*la) & artist_names(*lb))
+
+
 def duration_penalty(a: Optional[float], b: Optional[float]) -> float:
     """Multiplicative penalty (0..1) for a duration mismatch in seconds."""
     if a is None or b is None or a <= 0 or b <= 0:

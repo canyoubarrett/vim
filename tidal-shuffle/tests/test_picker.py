@@ -88,3 +88,30 @@ def test_allow_seed_artist_wins_over_the_cooldown():
     ctx = PickContext(seed_artist="Artist 1", allow_seed_artist=True, recent_artists=["Artist 1"], artist_cooldown=3)
     ordered, note = order_candidates(cands(), ctx, "top")
     assert ordered[0].artist == "Artist 1" and note == ""
+
+
+def test_never_the_seed_artist_back_to_back_even_when_nothing_else_is_left():
+    only_seed_artist = [
+        Candidate("Song A", "Artist 1", source="s", score=0.9, rank=0, duration=200),
+        Candidate("Song B", "Artist 1 feat. Guest", source="s", score=0.8, rank=1, duration=200),
+        Candidate("Song C", "Guest, Artist 1", source="s", score=0.7, rank=2, duration=200),
+    ]
+    ordered, note = order_candidates(only_seed_artist, PickContext(seed_artist="Artist 1"), "top")
+    assert ordered == [] and note == "nothing playable"
+    ctx = PickContext(seed_artist="Artist 1", allow_seed_artist=True)
+    assert len(order_candidates(only_seed_artist, ctx, "top")[0]) == 3
+
+
+def test_featured_seed_artist_counts_as_the_same_artist():
+    pool = [Candidate("Song A", "Santana feat. Buddy Miles", score=0.9, rank=0, duration=200),
+            Candidate("Song B", "Jimi Hendrix", score=0.5, rank=1, duration=200)]
+    ordered, _ = order_candidates(pool, PickContext(seed_artist="Buddy Miles"), "top")
+    assert [c.title for c in ordered] == ["Song B"]
+
+
+def test_cooldown_covers_every_credited_artist():
+    pool = [Candidate("Song A", "Guest feat. Artist 2", score=0.9, rank=0, duration=200),
+            Candidate("Song B", "Artist 3", score=0.5, rank=1, duration=200)]
+    ctx = PickContext(recent_artists=["The Artist 2"], artist_cooldown=5)
+    ordered, note = order_candidates(pool, ctx, "top")
+    assert [c.title for c in ordered] == ["Song B"] and note == ""

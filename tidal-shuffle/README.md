@@ -195,8 +195,13 @@ flags too: `--strategy`, `--artist-cooldown`, `--allow-seed-artist`,
 * `strategy`: `top` (Spotify's radio order), `weighted` (random, biased
   toward the top; the default), `random`, `discovery` (deeper, less popular
   picks)
-* `artist_cooldown`: no artist twice within N songs
-* `allow_seed_artist`: may the next song be by the artist playing now?
+* `artist_cooldown`: no artist twice within N songs (5). If that leaves
+  nothing to play it is relaxed, but the next point never is.
+* `allow_seed_artist`: may the next song be by the artist playing now? Off
+  by default: never the same artist back to back. Every credited artist
+  counts ("Santana feat. Buddy Miles" is not played after Buddy Miles), on
+  both the Spotify credit and the TIDAL track. If a source has nothing else,
+  the next source is asked instead.
 * `avoid_repeats_for` / `avoid_repeats_days`: how long a song you heard,
   picked or chosen yourself, is kept out
 * `seed`: `current` (each song seeds the next), `anchor` (stay around the
