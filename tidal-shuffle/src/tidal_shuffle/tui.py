@@ -137,9 +137,93 @@ def lyric_rows(lyrics: Lyrics, position: Optional[float], duration: Optional[flo
     return out
 
 
+def _line_color(kind: str, th: Theme):
+    if kind.startswith("past:"):
+        return lerp(th.past, th.bg, min(0.7, (int(kind[5:]) - 1) / 8))
+    if kind.startswith("next:"):
+        return lerp(th.text, th.past, min(1.0, (int(kind[5:]) - 1) / 8))
+    if kind == "countin":
+        return th.title
+    return th.text
+
+
+def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, height: int, th: Theme) -> Optional[list]:
+    """All the lyrics at once, in two columns (or one, if that fits), split at a
+    verse break; the current line inverted. None when they do not fit."""
+    col_w = (width - 4) // 2
+
+    def wrapped(wrap_at: int) -> list[tuple[str, int]]:
+        out: list[tuple[str, int]] = []
+        for i, line in enumerate(lyrics.lines):
+            for part in (textwrap.wrap(line.text.strip(), max(8, wrap_at)) or [""]):
+                out.append((part, i))
+        while out and not out[0][0]:
+            out.pop(0)
+        while out and not out[-1][0]:
+            out.pop()
+        return out
+
+    rows = wrapped(width - 8)                 # one column, if everything fits
+    if not rows:
+        return None
+    current = lyrics.index_at(position or 0.0) if lyrics.synced else -1
+    grid = [[(" ", None)] * width for _ in range(height)]
+
+    def paint(column: list, x0: int, w: int, top: int) -> None:
+        block = max((len(t) for t, i in column if i == current), default=0)
+        for r, (text, i) in enumerate(column):
+            y = top + r
+            if y >= height:
+                return
+            start = x0 + max(0, (w - len(text)) // 2)
+            row = grid[y]
+            if i == current and current >= 0:
+                lo = x0 + max(0, (w - block) // 2 - 2)
+                for c in range(lo, min(x0 + w, lo + block + 4)):
+                    row[c] = (" ", th.current_fg, True, th.current_bg)
+                for k, ch in enumerate(text):
+                    row[start + k] = (ch, th.current_fg, True, th.current_bg)
+            else:
+                kind = "plain" if current < 0 else (f"past:{current - i}" if i < current else f"next:{i - current}")
+                color = _line_color(kind, th)
+                for k, ch in enumerate(text):
+                    row[start + k] = (ch, color)
+
+    if len(rows) <= height:
+        paint(rows, 0, width, max(0, (height - len(rows)) // 2))
+        return grid
+    rows = wrapped(col_w - 4)                 # two columns, narrower lines
+    if col_w < 18 or len(rows) > 2 * height:
+        return None
+    half = (len(rows) + 1) // 2
+    split = half
+    for d in range(0, 6):                      # prefer a verse break near the middle
+        for k in (half + d, half - d):
+            if 0 < k < len(rows) and not rows[k][0]:
+                split = k
+                break
+        else:
+            continue
+        break
+    left, right = rows[:split], rows[split:]
+    while right and not right[0][0]:
+        right.pop(0)
+    if len(left) > height or len(right) > height:
+        return None
+    top = max(0, (height - max(len(left), len(right))) // 2)   # both columns start on the same row
+    paint(left, 0, col_w, top)
+    paint(right, col_w + 4, width - col_w - 4, top)
+    return grid
+
+
 def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int, height: int,
                 th: Theme) -> list:
-    """Lyric rows centred in the panel; the line being sung is inverted."""
+    """Lyric rows centred in the panel; the line being sung is inverted.
+    Lyrics without real timing are shown whole, in two columns, when they fit."""
+    if lyrics.estimated or not lyrics.synced:
+        whole = two_column_grid(lyrics, position, width, height, th)
+        if whole is not None:
+            return whole
     grid = [[(" ", None)] * width for _ in range(height)]
     rows = lyric_rows(lyrics, position, duration, width, height)
     # a wrapped current line gets one even bar, as wide as its longest row
@@ -158,14 +242,7 @@ def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[fl
             for i, ch in enumerate(text):
                 row[start + i] = (ch, th.current_fg, True, th.current_bg)
         else:
-            if kind.startswith("past:"):
-                color = lerp(th.past, th.bg, min(0.7, (int(kind[5:]) - 1) / 8))
-            elif kind.startswith("next:"):
-                color = lerp(th.text, th.past, min(1.0, (int(kind[5:]) - 1) / 8))
-            elif kind == "countin":
-                color = th.title
-            else:
-                color = th.text
+            color = _line_color(kind, th)
             for i, ch in enumerate(text):
                 row[start + i] = (ch, color)
         grid[r] = row
@@ -190,6 +267,8 @@ class ShuffleTUI:
         self.logs: deque = deque(maxlen=400)
         self._lock = threading.Lock()
         self.view = "auto"           # auto: logo + lyrics | logo: the logo alone
+        self._estimate_key = None
+        self._estimate = None
 
     # -- inputs ------------------------------------------------------------------
     def log(self, msg: str, dim: bool = False) -> None:
@@ -286,7 +365,14 @@ class ShuffleTUI:
 
     def lyrics_panel(self, lyr: Lyrics) -> Panel:
         pos, duration, _ = self.position()
-        title = f"Lyrics · {lyr.source}" + ("" if lyr.synced else " (not synced)")
+        if not lyr.synced:
+            # no timing from the source: guess it from the song's length, so the
+            # lyrics still follow along (and show it in the title)
+            key = (id(lyr), duration)
+            if self._estimate_key != key:
+                self._estimate_key, self._estimate = key, lyr.estimate_timing(duration)
+            lyr = self._estimate
+        title = f"Lyrics · {lyr.source}" + (" · timing estimated" if lyr.estimated else ("" if lyr.synced else " (not synced)"))
         th = self.th
         return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th)), title, padding=(0, 0))
 

@@ -135,3 +135,19 @@ def test_service_none_found_is_remembered_but_failures_are_not(tmp_path):
     svc2 = LyricsService([Src("lrclib", None, boom=True)], cache_path=tmp_path / "l2.json")
     assert wait(svc2, "C", "D") is None
     assert not (tmp_path / "l2.json").exists()
+
+
+def test_lrclib_retries_with_a_plainer_title_for_synced_lyrics():
+    asked = []
+    def handler(req):
+        if req.url.path == "/api/get":
+            return httpx.Response(200, json={"trackName": "Song (2019 Remaster)", "artistName": "Band feat. Guest",
+                                             "duration": 200, "plainLyrics": "only plain"})
+        asked.append((req.url.params["track_name"], req.url.params["artist_name"]))
+        if req.url.params["track_name"] == "Song":
+            return httpx.Response(200, json=[{"trackName": "Song", "artistName": "Band", "duration": 201,
+                                              "syncedLyrics": "[00:01.00]synced at last"}])
+        return httpx.Response(200, json=[])
+    lyr = lrclib(handler).fetch("Song (2019 Remaster)", "Band feat. Guest", "Album", 200.0, None)
+    assert lyr.synced and lyr.lines[0].text == "synced at last"
+    assert asked[-1] == ("Song", "Band")

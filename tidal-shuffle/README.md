@@ -80,19 +80,28 @@ simply follows your choice.
 
 * at the top, the song playing, a progress bar, and the next pick;
 * on the left, the Alter Era logo, floating: it bobs, drifts and tilts, its
-  colour breathes, and its shadow shrinks as it rises;
+  colour breathes, and its shadow shrinks as it rises. It is traced from the
+  vector original (`assets/alter-era.svg`) into braille at whatever size the
+  panel allows, so it stays crisp; if it looks too wide or narrow in your
+  font, adjust `ui.cell_aspect` (a cell's width / height, 0.5 by default);
 * on the right, the **lyrics**, scrolling with the song, the line being
   sung shown inverted on a solid bar (TIDAL's own synced lyrics first, then
-  [LRCLIB](https://lrclib.net), free and keyless; unsynced lyrics scroll
-  with the song's progress). Lyrics are cached in
+  [LRCLIB](https://lrclib.net), free and keyless, which is searched again
+  with a plainer title and the main artist when only plain lyrics turned
+  up). Lyrics without timing get estimated timing: the lines are spread over
+  the song after a short intro, longer lines getting more time and verse
+  breaks counting as pauses, and the title says "timing estimated"; they are
+  shown whole, in two columns split at a verse break when needed, with the
+  estimated line highlighted, or scrolled along when even two columns are
+  too few. Lyrics are cached in
   `~/.config/tidal-shuffle/cache/lyrics.json`. A song without lyrics gives
   the logo the whole width, and so does `l`; a narrow window gives the
   lyrics the whole width;
 * at the bottom, the log and the keys.
 
 `tidal-shuffle run --plain` (or `ui.screen: plain`) keeps the scrolling log
-instead. `ui.logo_file` points at your own `---BIG---` / `---SMALL---`
-braille art; `ui.lyrics`, `ui.lyrics_sources`, `ui.visualizer` and `ui.fps`
+instead. `ui.logo_file` points at your own logo, an `.svg` (paths with
+lines and arcs) or `---BIG---` / `---SMALL---` braille art; `ui.lyrics`, `ui.lyrics_sources`, `ui.visualizer` and `ui.fps`
 tune the rest.
 
 **Keys.** While `tidal-shuffle run` is in front:

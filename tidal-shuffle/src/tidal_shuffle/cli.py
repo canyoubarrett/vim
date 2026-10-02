@@ -243,7 +243,7 @@ def _make_screen(cfg: AppConfig, rt, loop):
     scene = None
     if cfg.ui.visualizer:
         art = Path(cfg.ui.logo_file).expanduser() if cfg.ui.logo_file else None
-        scene = LogoScene(art_path=art)
+        scene = LogoScene(art_path=art, cell_aspect=cfg.ui.cell_aspect)
     return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene)
 
 

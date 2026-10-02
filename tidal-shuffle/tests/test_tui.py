@@ -138,3 +138,65 @@ def test_screen_layouts():
     small, _ = render(make_tui(lyr), 50, 12)
     assert "Midnight City" in small and "display error" not in small
     assert "waiting for TIDAL" in render(make_tui(None, current=False), 80, 30)[0]
+
+
+def test_vector_logo_from_the_svg():
+    from tidal_shuffle.visualizer import ASSET_SVG, parse_svg_paths
+    lines = parse_svg_paths(ASSET_SVG.read_text())
+    assert len(lines) == 21
+    # the circle (two half arcs) closes on itself and is round
+    circle = lines[-1]
+    xs, ys = [p[0] for p in circle], [p[1] for p in circle]
+    assert abs((max(xs) - min(xs)) - 30.37) < 0.5 and abs((max(ys) - min(ys)) - 30.37) < 0.5
+    scene = LogoScene()
+    assert scene.polylines
+    for w, h in ((30, 14), (50, 26), (120, 50)):
+        g = scene.frame(w, h, 3.0)
+        dots = sum(1 for row in g for c in row if "⠀" < c[0] <= "⣿")
+        assert len(g) == h and all(len(r) == w for r in g) and dots > 20
+    # bigger panel, bigger logo
+    small = sum(1 for row in LogoScene().frame(40, 20, 3.0) for c in row if "⠀" < c[0] <= "⣿")
+    big = sum(1 for row in LogoScene().frame(120, 50, 3.0) for c in row if "⠀" < c[0] <= "⣿")
+    assert big > small * 2
+
+
+def test_braille_text_art_still_works(tmp_path):
+    from tidal_shuffle.visualizer import ASSET
+    scene = LogoScene(art_path=ASSET)
+    assert not scene.polylines and scene.arts
+    g = scene.frame(60, 30, 3.0)
+    assert sum(1 for row in g for c in row if "⠀" < c[0] <= "⣿") > 50
+
+
+def test_plain_lyrics_get_estimated_timing():
+    plain = Lyrics(lines=[LyricLine(None, t) for t in ["one", "two", "", "three", "four"]], synced=False, source="LRCLIB")
+    est = plain.estimate_timing(200.0)
+    assert est.synced and est.estimated
+    times = [l.time for l in est.lines]
+    assert times == sorted(times) and 5 <= times[0] <= 20 and times[-1] < 200 - 6
+    assert plain.estimate_timing(None) is plain
+    assert est.index_at(0.0) == -1 and est.index_at(199.0) == 4
+
+
+def test_unsynced_lyrics_use_two_columns_when_they_fit():
+    lines = []
+    for verse in range(4):
+        lines += [LyricLine(None, f"verse {verse} line {i}") for i in range(6)] + [LyricLine(None, "")]
+    est = Lyrics(lines=lines, synced=False).estimate_timing(240.0)
+    grid = lyrics_grid(est, 120.0, 240.0, 80, 20, MOCHA)
+    text = ["".join(c[0] for c in row) for row in grid]
+    assert any("verse 0 line 0" in t for t in text) and any("verse 3 line 5" in t for t in text)   # everything shown
+    both = [t for t in text if "verse 0" in t and "verse 2" in t] or [t for t in text if "verse 1" in t and "verse 3" in t]
+    assert both                                                       # side by side
+    lit = [c for row in grid for c in row if len(c) > 3 and c[3] == MOCHA.current_bg]
+    assert lit                                                        # the estimated line is highlighted
+    # too long for two columns: falls back to the scrolling single column
+    many = Lyrics(lines=[LyricLine(None, f"l{i}") for i in range(200)], synced=False).estimate_timing(240.0)
+    grid = lyrics_grid(many, 120.0, 240.0, 80, 20, MOCHA)
+    assert any(len(c) > 3 and c[3] == MOCHA.current_bg for row in grid for c in row)
+
+
+def test_panel_title_says_timing_is_estimated():
+    plain = Lyrics(lines=[LyricLine(None, "hello there")], synced=False, source="LRCLIB")
+    out, _ = render(make_tui(plain), 120, 40)
+    assert "Lyrics · LRCLIB · timing estimated" in out

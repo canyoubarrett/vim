@@ -92,7 +92,8 @@ ui:
   lyrics_sources: [tidal, lrclib]
   visualizer: true          # the floating Alter Era logo next to the lyrics
   theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
-  logo_file: ""             # your own ---BIG--- / ---SMALL--- braille art file
+  logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
+  cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
   fps: 12
 
 tidal:

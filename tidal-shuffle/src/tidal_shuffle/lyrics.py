@@ -38,6 +38,7 @@ class Lyrics:
     synced: bool = False
     source: str = ""
     instrumental: bool = False
+    estimated: bool = False     # times guessed from the song's length, not from the source
 
     def index_at(self, position: float, lead: float = 0.25) -> int:
         """Index of the line being sung at ``position`` (-1 before the first line)."""
@@ -51,6 +52,25 @@ class Lyrics:
             else:
                 break
         return idx
+
+    def estimate_timing(self, duration: Optional[float]) -> "Lyrics":
+        """Plain lyrics with guessed times, so they can follow the song.
+
+        Vocals rarely start at 0:00 or run to the very end, so the lines are
+        spread between a short intro and outro, longer lines getting more time
+        and blank lines (between verses) counting as pauses."""
+        if self.synced or not duration or duration < 20 or not self.lines:
+            return self
+        intro = min(max(duration * 0.06, 5.0), 20.0)
+        outro = min(max(duration * 0.08, 6.0), 25.0)
+        span = max(10.0, duration - intro - outro)
+        weights = [(1.0 + len(l.text.strip()) / 40.0) if l.text.strip() else 0.8 for l in self.lines]
+        total = sum(weights) or 1.0
+        t, out = intro, []
+        for line, w in zip(self.lines, weights):
+            out.append(LyricLine(round(t, 2), line.text))
+            t += span * w / total
+        return Lyrics(lines=out, synced=True, source=self.source, estimated=True)
 
     def to_json(self) -> dict:
         return {"lines": [[l.time, l.text] for l in self.lines], "synced": self.synced,
@@ -162,9 +182,21 @@ class LrclibLyrics:
         if duration:
             params["duration"] = int(round(duration))
         hit = self._get("get", params) if album and duration else None
-        if not hit:
-            results = self._get("search", {"track_name": title, "artist_name": artist}) or []
-            hit = self._best(results, title, artist, duration)
+        if not hit or not hit.get("syncedLyrics"):
+            # search, then again with a plainer title and the main artist ("(Remastered)", "feat. ...")
+            from .matching import core_title, primary_artist
+
+            tries = [(title, artist)]
+            plain_t, plain_a = core_title(title), primary_artist(artist)
+            if (plain_t, plain_a) != (title, artist):
+                tries.append((plain_t, plain_a))
+            for t_, a_ in tries:
+                results = self._get("search", {"track_name": t_, "artist_name": a_}) or []
+                best = self._best(results, title, artist, duration)
+                if best is not None and (best.get("syncedLyrics") or not hit):
+                    hit = best
+                if hit and hit.get("syncedLyrics"):
+                    break
         if not hit:
             return None
         if hit.get("instrumental"):
@@ -173,9 +205,12 @@ class LrclibLyrics:
 
     @staticmethod
     def _best(results: list, title: str, artist: str, duration: Optional[float]) -> Optional[dict]:
+        from .matching import core_title
+
         best, best_score = None, 0.0
         for r in results if isinstance(results, list) else []:
-            ts = title_similarity(title, r.get("trackName") or "")
+            # a remaster or a radio edit has the same words: compare the bare titles
+            ts = title_similarity(core_title(title), core_title(r.get("trackName") or ""))
             ar = artist_similarity(artist, [r.get("artistName") or ""])
             if ts < 0.8 or ar < 0.7:
                 continue

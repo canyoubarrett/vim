@@ -86,7 +86,8 @@ class UiConfig:
     lyrics_sources: list[str] = field(default_factory=lambda: ["tidal", "lrclib"])
     visualizer: bool = True       # the floating Alter Era logo next to the lyrics
     theme: str = "mocha"          # Catppuccin flavor: mocha | macchiato | frappe | latte
-    logo_file: str = ""           # an alter-era.txt style file (---BIG--- / ---SMALL--- braille art)
+    logo_file: str = ""           # an .svg (traced into braille) or ---BIG--- / ---SMALL--- braille art
+    cell_aspect: float = 0.5      # a terminal cell's width / height, so the logo keeps its proportions
     fps: float = 12.0
 
 
@@ -313,7 +314,8 @@ ui:
   lyrics_sources: [tidal, lrclib]
   visualizer: true          # the floating Alter Era logo next to the lyrics
   theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
-  logo_file: ""             # your own ---BIG--- / ---SMALL--- braille art file
+  logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
+  cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
   fps: 12
 
 tidal:
@@ -581,6 +583,7 @@ def _build(data: Mapping) -> AppConfig:
         "visualizer": _as_bool,
         "theme": lambda v, n: _as_choice(str(v).lower().replace("é", "e"), n, ("mocha", "macchiato", "frappe", "latte")),
         "logo_file": lambda v, n: str(v or ""),
+        "cell_aspect": lambda v, n: _as_number(v, n, float, 0.2, 1.25),
         "fps": lambda v, n: _as_number(v, n, float, 1, 30),
     })
     _fill(cfg.tidal, data.get("tidal") or {}, "tidal", {
