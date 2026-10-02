@@ -92,11 +92,31 @@ def test_isrc_seed_lookup_is_used_first():
     assert search.url.params["q"] == "isrc:QQ1"
 
 
-def test_falls_back_to_song_radio_when_recs_forbidden():
+def test_falls_back_to_related_artists_when_recs_forbidden():
     src = make(Server(recs=False))
     cands = src.candidates([Seed("Seed Song", "Seed Artist")], 10)
     assert src.recommendations_available is False
-    assert [c.title for c in cands] == [f"Radio {i}" for i in range(4)]  # seed itself removed
+    assert [c.title for c in cands][:3] == ["Top 0", "Top 1", "Top 2"]
+
+
+def test_premium_required_disables_the_source():
+    class Premium(Server):
+        def __call__(self, request):
+            if "api/token" in str(request.url):
+                return super().__call__(request)
+            return httpx.Response(403, json={"error": {"status": 403, "message": "Active premium subscription required for the owner of the app."}})
+    src = make(Premium())
+    assert src.candidates([Seed("Seed Song", "Seed Artist")], 5) == []
+    ok, reason = src.available()
+    assert not ok and "Premium" in reason
+
+
+def test_genre_search_respects_the_ten_item_limit():
+    server = Server(recs=False, related=False)
+    src = make(server)
+    src.candidates([Seed("Seed Song", "Seed Artist")], 30)
+    limits = [int(r.url.params["limit"]) for r in server.requests if r.url.path == "/v1/search"]
+    assert limits and max(limits) <= 10
 
 
 def test_falls_back_to_related_artists_then_genre():

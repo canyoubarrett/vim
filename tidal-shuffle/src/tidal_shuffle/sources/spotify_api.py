@@ -1,13 +1,17 @@
 """Spotify Web API as a recommendation source (client-credentials flow).
 
-Spotify removed ``/recommendations`` and ``/related-artists`` for apps created
-after 2024-11-27, and (since early 2026) development-mode apps need a Premium
-owner. This source therefore probes what the app can reach and degrades:
+What a Spotify app can still reach depends on when it was created:
 
-1. ``/recommendations`` seeded by the current song (best, if allowed)
-2. the Spotify-owned "<song> Radio" playlist found through search
-3. related artists' top tracks, then same-genre tracks via search
-4. the seed artist's own top tracks
+* apps with extended quota from before 2024-11-27 keep ``/recommendations``
+  and ``/related-artists``;
+* since 2026 every development-mode app needs its owner to have Premium (all
+  calls answer 403 otherwise), search returns at most 10 items, and artist
+  top tracks are gone.
+
+This source probes what works, remembers what does not, and degrades:
+recommendations → related artists' top tracks → same-genre search. Its most
+useful job for most people is finding the current song's Spotify id for the
+``spotify-app`` source.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from .base import dedupe, tag
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
+SEARCH_LIMIT = 10  # the 2026 maximum for development-mode apps
 
 
 class SpotifyAuthError(RuntimeError):
@@ -67,6 +72,7 @@ class SpotifyApiSource:
         self._dead: Optional[str] = None
         self.recommendations_available: Optional[bool] = None
         self.related_available: Optional[bool] = None
+        self.top_tracks_available: Optional[bool] = None
         self._cache: dict[tuple, object] = {}
 
     # -- auth ---------------------------------------------------------------
@@ -111,6 +117,15 @@ class SpotifyApiSource:
                 token = self._ensure_token()
                 data = get_json(self._client, f"{API}{path}", params=params or None,
                                 headers={"Authorization": f"Bearer {token}"}, sleep=self._sleep)
+            elif e.status == 403 and "premium" in str(e).lower():
+                self._dead = ("Spotify answers 403: the owner of this Spotify developer app needs Premium "
+                              "(required for development-mode apps since 2026)")
+                self.log(self._dead)
+                raise SpotifyAuthError(self._dead) from None
+            elif e.status == 429:
+                self._dead = "Spotify rate-limited this app for a long time; disabled for this session"
+                self.log(self._dead)
+                raise SpotifyAuthError(self._dead) from None
             else:
                 raise
         self._cache[key] = data
@@ -135,7 +150,7 @@ class SpotifyApiSource:
         best, best_score = None, 0.0
         for q in queries:
             try:
-                items = self._get("/search", q=q, type="track", limit=10, market=self.market)["tracks"]["items"]
+                items = self._get("/search", q=q, type="track", limit=SEARCH_LIMIT, market=self.market)["tracks"]["items"]
             except (HttpError, KeyError):
                 continue
             for t in items:
@@ -173,36 +188,15 @@ class SpotifyApiSource:
         out = [_track_to_candidate(t, 1.0 - 0.5 * (i / n)) for i, t in enumerate(tracks)]
         return [c for c in out if c]
 
-    def song_radio(self, title: str, artist: str, limit: int) -> list[Candidate]:
-        """The Spotify-owned "<song> Radio" playlist, when search still returns it."""
-        wanted = f"{core_title(title)} radio".lower()
-        try:
-            items = self._get("/search", q=f"{core_title(title)} Radio", type="playlist", limit=10, market=self.market)["playlists"]["items"]
-        except (HttpError, KeyError):
-            return []
-        pid = None
-        for p in items or []:
-            if not p:
-                continue
-            owner = (p.get("owner") or {}).get("id", "")
-            if owner == "spotify" and (p.get("name") or "").lower() == wanted:
-                pid = p.get("id")
-                break
-        if not pid:
-            return []
-        try:
-            data = self._get(f"/playlists/{pid}/tracks", limit=min(limit, 100), market=self.market, fields="items(track(id,name,artists,album(name),duration_ms,popularity,external_ids,type))")
-        except HttpError:
-            return []
-        tracks = [(it or {}).get("track") for it in data.get("items") or []]
-        n = max(1, len(tracks))
-        out = [_track_to_candidate(t, 0.95 - 0.5 * (i / n)) for i, t in enumerate(tracks)]
-        return [c for c in out if c]
-
     def artist_top_tracks(self, artist_id: str, score: float) -> list[Candidate]:
+        if self.top_tracks_available is False:
+            return []
         try:
             tracks = self._get(f"/artists/{artist_id}/top-tracks", market=self.market).get("tracks") or []
-        except HttpError:
+            self.top_tracks_available = True
+        except HttpError as e:
+            if e.status in (403, 404):
+                self.top_tracks_available = False
             return []
         n = max(1, len(tracks))
         out = [_track_to_candidate(t, score * (1.0 - 0.4 * (i / n))) for i, t in enumerate(tracks)]
@@ -234,19 +228,29 @@ class SpotifyApiSource:
             except HttpError:
                 genres = []
             for g in genres[:2]:
-                try:
-                    items = self._get("/search", q=f'genre:"{g}"', type="track", limit=min(50, limit), market=self.market)["tracks"]["items"]
-                except (HttpError, KeyError):
-                    continue
-                n = max(1, len(items))
-                for i, t in enumerate(items):
-                    c = _track_to_candidate(t, 0.55 - 0.3 * (i / n))
-                    if c:
-                        out.append(c)
+                for offset in range(0, max(SEARCH_LIMIT, min(limit, 30)), SEARCH_LIMIT):
+                    try:
+                        items = self._get("/search", q=f'genre:"{g}"', type="track", limit=SEARCH_LIMIT,
+                                          offset=offset, market=self.market)["tracks"]["items"]
+                    except (HttpError, KeyError):
+                        break
+                    for i, t in enumerate(items):
+                        c = _track_to_candidate(t, 0.55 - 0.3 * ((offset + i) / 30.0))
+                        if c:
+                            out.append(c)
+                    if len(items) < SEARCH_LIMIT:
+                        break
         return out
 
     # -- Source protocol ----------------------------------------------------
     def candidates(self, seeds: Sequence[Seed], limit: int) -> list[Candidate]:
+        try:
+            return self._candidates(seeds, limit)
+        except SpotifyAuthError as e:
+            self.log(str(e))
+            return []
+
+    def _candidates(self, seeds: Sequence[Seed], limit: int) -> list[Candidate]:
         try:
             resolved = []
             for s in seeds[:5]:
@@ -264,8 +268,6 @@ class SpotifyApiSource:
             return []
         primary = resolved[0]
         cands = self.recommendations([t["id"] for t in resolved], limit)
-        if len(cands) < 3:
-            cands += self.song_radio(primary.get("name", ""), seeds[0].artist, limit)
         if len(cands) < 3:
             artist_id = ((primary.get("artists") or [{}])[0]).get("id")
             if artist_id:

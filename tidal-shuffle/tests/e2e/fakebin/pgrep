@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Fake `pgrep -f TIDAL.app/...`: is the fake TIDAL process alive?"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _fakecommon import FAKE_DIR, log  # noqa: E402
+
+log("pgrep", " ".join(sys.argv[1:]))
+try:
+    pid = int(open(os.path.join(FAKE_DIR, "tidal.pid")).read())
+    os.kill(pid, 0)
+except (OSError, ValueError):
+    sys.exit(1)
+print(pid)

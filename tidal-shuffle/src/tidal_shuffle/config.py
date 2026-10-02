@@ -33,12 +33,19 @@ class SpotifyAppConfig:
     harvest: int = 25            # how many upcoming tracks to read per seed
     seed_method: str = "auto"    # auto | station | autoplay
     mute: bool = True            # set Spotify's volume to 0 while harvesting
-    restore: bool = True         # restore volume / pause state afterwards
+    restore: bool = True         # put Spotify's volume back afterwards
     hide_window: bool = True     # keep Spotify out of the way when we launch it
     quit_after: bool = False     # quit Spotify after each harvest
-    skip_delay: float = 0.7      # seconds between "next track" calls
+    skip_delay: float = 0.0      # extra pause after each skip (gentler on Spotify)
     launch_timeout: float = 25.0 # seconds to wait for Spotify to answer AppleScript
     max_seconds: float = 60.0    # abort a harvest that takes longer than this
+    app_path: str = ""           # Spotify.app location; empty = /Applications or ~/Applications
+    # How to find the TIDAL song on Spotify, in order. "spotify-ui" drives the
+    # Spotify app's own search page through macOS Accessibility.
+    id_lookups: list = field(default_factory=lambda: ["spotify-api", "listenbrainz", "spotify-ui", "odesli"])
+    odesli_api_key: str = ""     # song.link retired its keyless API on 2026-07-31
+    ui_label_prefix: str = "Play "   # Spotify's button label: "Play <song> by <artist>"
+    ui_label_by: str = " by "        # change both for a non-English Spotify
 
 
 @dataclass
@@ -243,11 +250,21 @@ spotify:
     enabled: true
     harvest: 25             # upcoming songs to read from Spotify per seed
     seed_method: auto       # auto | station | autoplay
-    mute: true
-    restore: true
+    mute: true              # Spotify is muted while it is harvesting
+    restore: true           # and its volume is put back afterwards
     hide_window: true
     quit_after: false
-    skip_delay: 0.7
+    max_seconds: 60         # give up on a harvest after this long
+    app_path: ""            # set if Spotify.app is not in /Applications
+    # How the song TIDAL is playing is found on Spotify, tried in order:
+    #   spotify-api  - Web API search (needs the credentials below + Premium)
+    #   listenbrainz - ListenBrainz's free Spotify-id index
+    #   spotify-ui   - Spotify's own search page, driven through Accessibility
+    #   odesli       - song.link, only with an API key
+    id_lookups: [spotify-api, listenbrainz, spotify-ui, odesli]
+    odesli_api_key: ""
+    ui_label_prefix: "Play "  # Spotify labels track buttons "Play <song> by <artist>";
+    ui_label_by: " by "       # change these two if Spotify is not in English
 
 lastfm:
   api_key: ""               # free key: https://www.last.fm/api/account/create
@@ -383,6 +400,24 @@ def _sources_from(value: Any, name: str) -> list[str]:
     return out
 
 
+ID_LOOKUPS = ("spotify-api", "listenbrainz", "spotify-ui", "odesli")
+
+
+def _id_lookups_from(value: Any, name: str) -> list[str]:
+    if isinstance(value, str):
+        value = [s.strip() for s in value.split(",") if s.strip()]
+    if not isinstance(value, list):
+        raise ConfigError(f"{name}: expected a list")
+    out = []
+    for s in value:
+        s = str(s).strip().lower()
+        if s not in ID_LOOKUPS:
+            raise ConfigError(f"{name}: unknown lookup {s!r} (valid: {', '.join(ID_LOOKUPS)})")
+        if s not in out:
+            out.append(s)
+    return out
+
+
 def _upgrade_legacy(data: dict) -> dict:
     """Translate the v0.1 config layout into the current one."""
     data = dict(data)
@@ -468,9 +503,14 @@ def _build(data: Mapping) -> AppConfig:
             "harvest": lambda v, n: int(_as_number(v, n, int, 1, 200)),
             "seed_method": lambda v, n: _as_choice(v, n, ("auto", "station", "autoplay")),
             "mute": _as_bool, "restore": _as_bool, "hide_window": _as_bool, "quit_after": _as_bool,
-            "skip_delay": lambda v, n: _as_number(v, n, float, 0.1, 10),
+            "skip_delay": lambda v, n: _as_number(v, n, float, 0, 10),
             "launch_timeout": lambda v, n: _as_number(v, n, float, 1, 300),
             "max_seconds": lambda v, n: _as_number(v, n, float, 5, 600),
+            "app_path": lambda v, n: str(v or "").strip(),
+            "id_lookups": _id_lookups_from,
+            "odesli_api_key": lambda v, n: str(v or "").strip(),
+            "ui_label_prefix": lambda v, n: str(v),
+            "ui_label_by": lambda v, n: str(v),
         })
     if vibe_data is not None:
         cfg.spotify.vibe = _vibe_from(vibe_data, "spotify.vibe")

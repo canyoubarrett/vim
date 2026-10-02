@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Fake `osascript` that understands the AppleScript tidal-shuffle sends to Spotify and TIDAL."""
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _fakecommon import catalog, log, save_spotify_state, spotify_state, tidal  # noqa: E402
+
+US = "\x1f"
+script = sys.stdin.read() if "-e" not in sys.argv else sys.argv[sys.argv.index("-e") + 1]
+first = script.strip().splitlines()[0] if script.strip() else ""
+sp = spotify_state()
+
+
+def fail(msg, code=-2700):
+    print(f"execution error: {msg} ({code})", file=sys.stderr)
+    sys.exit(1)
+
+
+if 'tell application "TIDAL" to quit' in script:
+    log("osascript", "quit TIDAL")
+    tidal("/__quit")
+    sys.exit(0)
+if "System Events" in script and "set visible" in script:
+    log("osascript", "hide Spotify")
+    sys.exit(0)
+
+if "on harvest(" in script:
+    call = script.rsplit("return harvest(", 1)[1]
+    strings = re.findall(r'"([^"]*)"', call)
+    rest = re.sub(r'"[^"]*"', "", call).strip(" ,)\n").split(",")
+    nums = [x.strip() for x in rest if x.strip()]
+    seed, station = strings[0], strings[1]
+    wanted, mute, restore, use_station = int(nums[0]), nums[5] == "true", nums[6] == "true", nums[7].rstrip(")") == "true"
+    log("osascript", f"harvest seed={seed} wanted={wanted} station={use_station}")
+    if not sp.get("running"):
+        fail("Spotify got an error: Application isn't running.", -600)
+    cat = catalog()
+    sid = seed.rsplit(":", 1)[-1]
+    playlist = cat["stations"].get(sid, []) if use_station else []
+    meta = {t["spotify"]: t for t in cat["tracks"] if t.get("spotify")}
+    meta.update({t["spotify"]: t for t in cat.get("spotify_only", [])})
+    state = tidal("/__state") or {"playedCount": -1}
+    prev_volume = sp.get("volume", 64)
+    sp.update(playing=True, elected=True, elected_at_played=state["playedCount"], title="(harvest)", artist="")
+    if mute:
+        sp["volume"] = 0
+    save_spotify_state(sp)
+    time.sleep(1.2)  # skipping through the station takes a moment
+    lines = []
+    for s in playlist[:wanted]:
+        t = meta[s]
+        lines.append(US.join([f"spotify:track:{s}", t.get("spotify_title", t["title"]), t["artist"], t.get("album", ""),
+                              str(int(t["duration"] * 1000)), str(t.get("popularity", 50)), t["artist"]]))
+    if not lines:
+        lines.append("ERR" + US + "no-advance")
+    sp.update(playing=False, title=meta.get(playlist[-1], {}).get("title", "") if playlist else "")
+    if restore:
+        sp["volume"] = prev_volume
+    save_spotify_state(sp)
+    print("\n".join(lines))
+    sys.exit(0)
+
+if 'is running) then return "not-running"' in script:
+    if not sp.get("running"):
+        print("not-running")
+        sys.exit(0)
+    if "return {ps, vol, tid} as text" in script:
+        log("osascript", "spotify state")
+        print(US.join(["playing" if sp.get("playing") else "paused", str(sp.get("volume", 64)), "spotify:track:userprev"]))
+        sys.exit(0)
+    if 'return "ok"' in script:  # restore after an interrupted harvest
+        log("osascript", "restore " + ("volume" if "set sound volume" in script else "no-volume"))
+        m = re.search(r"set sound volume to (\d+)", script)
+        sp["playing"] = False
+        if m:
+            sp["volume"] = int(m.group(1))
+        save_spotify_state(sp)
+        print("ok")
+        sys.exit(0)
+
+if "return player state as string" in script:
+    if not sp.get("running"):
+        fail("Spotify got an error: Application isn't running.", -600)
+    print("playing" if sp.get("playing") else "paused")
+    sys.exit(0)
+
+if 'com.spotify.client" to quit' in script:
+    sp.update(running=False, playing=False)
+    save_spotify_state(sp)
+    sys.exit(0)
+
+log("osascript", "UNHANDLED " + first)
+fail("unsupported script in fake osascript")

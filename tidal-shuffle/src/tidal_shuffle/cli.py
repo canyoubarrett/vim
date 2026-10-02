@@ -171,7 +171,7 @@ def run(dry_run, once, **kwargs):
         raise click.ClickException(str(e))
     _print_startup(rt, method)
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
-    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say)
+    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True)
     try:
         loop.run(dry_run=dry_run, once=once)
     except KeyboardInterrupt:
@@ -457,17 +457,70 @@ def harvest(title, artist, config_path, limit):
     """Drive the Spotify app once and print the songs it suggests after TITLE by ARTIST."""
     cfg = _config_from({"config_path": config_path, "verbose": True})
     _require_macos("tidal-shuffle harvest")
-    from .applescript import default_runner
-    from .sources.spotify_app import SpotifyAppSource
+    from .app import build_spotify_app
 
-    src = SpotifyAppSource(cfg.spotify.app, runner=default_runner(), log=say)
+    rt = _runtime(cfg)
+    srcs = [s for s in rt.sources if s.name == "spotify-app"]
+    src = srcs[0] if srcs else build_spotify_app(cfg, rt.catalog, None, say)
+    src.log = say
     ok, reason = src.available()
     if not ok:
         raise click.ClickException(reason)
-    cands = src.candidates([Seed(title=title, artist=artist)], limit)
+    seed = Seed(title=title, artist=artist)
+    cands = src.candidates([seed], limit)
+    rt.close()
+    if seed.spotify_id:
+        console.print(f"[dim]found on Spotify as spotify:track:{seed.spotify_id} via {src.last_lookup}[/dim]")
     for c in cands:
         console.print(f"  {c.score:.2f}  {c.label()}  [dim]{c.album or ''}[/dim]", highlight=False)
     console.print(f"[dim]{len(cands)} songs[/dim]")
+
+
+@cli.command(name="spotify-ui")
+@click.option("--find", "find", help='Search Spotify for "Title - Artist" and press its play button (muted)')
+@click.option("--limit", default=150, show_default=True, help="Labels to list")
+@click.option("--config", "config_path", type=click.Path(path_type=Path))
+def spotify_ui_cmd(find, limit, config_path):
+    """Check that Tidal Shuffle can see and use the Spotify app's interface."""
+    cfg = _config_from({"config_path": config_path})
+    _require_macos("tidal-shuffle spotify-ui")
+    import re
+
+    from .spotify_ui import SpotifyUI, SpotifyUIError
+
+    app_cfg = cfg.spotify.app
+    ui = SpotifyUI(label_pattern="^" + re.escape(app_cfg.ui_label_prefix) + r"(?P<rest>.+)$",
+                   by_word=app_cfg.ui_label_by, log=say)
+    ok, reason = ui.available()
+    if not ok:
+        raise click.ClickException(reason)
+    try:
+        if find:
+            if " - " not in find:
+                raise click.ClickException('use --find "Title - Artist"')
+            title, artist = [p.strip() for p in find.split(" - ", 1)]
+            from .applescript import default_runner
+            from .sources.spotify_app import MUTE_SCRIPT
+
+            runner = default_runner()
+            if runner is not None:
+                runner.run(MUTE_SCRIPT, timeout=8)
+            button = ui.find_and_play(title, artist)
+            if button is None:
+                raise click.ClickException("no matching song found on Spotify's search page")
+            console.print(f"pressed: {button.label}  (match {button.score:.2f})")
+            return
+        rows = ui.dump(limit=limit)
+    except SpotifyUIError as e:
+        raise click.ClickException(str(e))
+    plays = 0
+    for role, label in rows:
+        mark = ""
+        if label.startswith(app_cfg.ui_label_prefix) and app_cfg.ui_label_by in label:
+            mark = "  [green]← track button[/green]"
+            plays += 1
+        console.print(f"[dim]{role:12}[/dim] {label}{mark}", highlight=False)
+    console.print(f"[dim]{len(rows)} labelled elements, {plays} track play buttons[/dim]")
 
 
 @cli.command()

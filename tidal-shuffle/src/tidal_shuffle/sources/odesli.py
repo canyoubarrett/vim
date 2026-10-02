@@ -1,7 +1,8 @@
-"""Odesli (song.link): map a TIDAL track to its Spotify id without any API key.
+"""Odesli (song.link): map a TIDAL track to its Spotify id.
 
-Unauthenticated use is rate limited (about 10 requests per minute), which is
-plenty for one lookup per song. Results are cached for the process lifetime.
+The keyless public API was retired on 2026-07-31 (requests now get HTTP 401
+``PUBLIC_API_ACCESS_DEPRECATED``), so this is only used when an API key is
+configured. Any 401/403/410 disables it for the rest of the session.
 """
 
 from __future__ import annotations
@@ -17,17 +18,27 @@ API_URL = "https://api.song.link/v1-alpha.1/links"
 
 
 class OdesliMapper:
-    def __init__(self, client: Optional[httpx.Client] = None, country: str = "US",
-                 min_interval: float = 6.5, sleep: Callable[[float], None] = time.sleep,
+    def __init__(self, api_key: Optional[str] = None, client: Optional[httpx.Client] = None, country: str = "US",
+                 min_interval: Optional[float] = None, sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic, log: Optional[Callable[[str], None]] = None):
+        self.api_key = (api_key or "").strip() or None
         self._client = client or make_client(timeout=15.0)
         self.country = country
-        self.min_interval = min_interval
+        # 10 requests/minute without a key, 60 with one.
+        self.min_interval = min_interval if min_interval is not None else (1.0 if self.api_key else 6.5)
         self._sleep = sleep
         self._clock = clock
         self._last_call = -1e9
         self._cache: dict[str, Optional[dict]] = {}
+        self._dead: Optional[str] = None
         self.log = log or (lambda m: None)
+
+    def available(self) -> tuple[bool, str]:
+        if self._dead:
+            return False, self._dead
+        if not self.api_key:
+            return False, "Odesli's keyless API was retired on 2026-07-31; set spotify.app.odesli_api_key to use it"
+        return True, ""
 
     def _throttle(self) -> None:
         wait = self.min_interval - (self._clock() - self._last_call)
@@ -38,12 +49,20 @@ class OdesliMapper:
     def lookup(self, url: str) -> Optional[dict]:
         if url in self._cache:
             return self._cache[url]
+        if self._dead:
+            return None
         self._throttle()
+        params = {"url": url, "userCountry": self.country, "songIfSingle": "true"}
+        if self.api_key:
+            params["key"] = self.api_key
         try:
-            data = get_json(self._client, API_URL, params={"url": url, "userCountry": self.country, "songIfSingle": "true"},
-                            sleep=self._sleep, retries=1)
+            data = get_json(self._client, API_URL, params=params, sleep=self._sleep, retries=1)
         except HttpError as e:
-            self.log(f"odesli lookup failed for {url}: {e}")
+            if e.status in (401, 403, 410):
+                self._dead = f"Odesli refused the request ({e.status}); disabled for this session"
+                self.log(self._dead)
+            else:
+                self.log(f"odesli lookup failed for {url}: {e}")
             data = None
         self._cache[url] = data
         return data

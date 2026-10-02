@@ -254,3 +254,106 @@ def test_mixed_metadata_snapshot_is_debounced(tmp_path):
     loop.step(); clock.sleep(1); loop.step()
     assert loop.state.current.title == "Seed Song"
     assert loop.state.tracks_seen == 1
+
+
+class SlowSource:
+    """A source that blocks until the test releases it (like a long Spotify harvest)."""
+
+    name = "slow"
+
+    def __init__(self, cands):
+        import threading
+        self.cands = cands
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.calls = 0
+
+    def available(self):
+        return True, ""
+
+    def candidates(self, seeds, limit):
+        self.calls += 1
+        self.started.set()
+        self.release.wait(5)
+        return [Candidate(**c.__dict__) for c in self.cands]
+
+
+def build_bg(tmp_path, source):
+    cfg = load_config(overrides={"shuffle": {"strategy": "top"}}, env={})
+    clock = Clock()
+    world = World(clock)
+    history = HistoryStore(tmp_path / "h.json")
+    engine = Engine(cfg, [source], FakeCatalog(), history, rng=random.Random(0), log=lambda m: None)
+    logs = []
+    loop = ShuffleLoop(cfg, engine, world, world, history, log=logs.append,
+                       clock=lambda: clock.mono, wall=lambda: clock.wall, sleep=clock.sleep, background=True)
+    return loop, world, clock, logs
+
+
+def wait_for(cond, timeout=5.0):
+    import time as _t
+    end = _t.monotonic() + timeout
+    while _t.monotonic() < end:
+        if cond():
+            return True
+        _t.sleep(0.01)
+    return False
+
+
+def test_background_planning_keeps_loop_responsive(tmp_path):
+    src = SlowSource(cands())
+    loop, world, clock, logs = build_bg(tmp_path, src)
+    world.start("Seed Song", "Seed Artist", duration=40, tidal_id="seed")
+    for _ in range(12):
+        loop.step(); clock.sleep(1)
+    assert src.started.wait(2)
+    assert loop.state.planning is not None and loop.state.plan is None
+    # the loop keeps polling while the source is busy
+    before = loop.state.tracks_seen
+    for _ in range(5):
+        loop.step(); clock.sleep(1)
+    assert loop.state.tracks_seen == before
+    src.release.set()
+    assert wait_for(lambda: loop.state.planning.done())
+    loop.step()
+    assert loop.state.plan is not None and loop.state.plan.primary.track.title == "Next One"
+    for _ in range(60):
+        loop.step(); clock.sleep(0.5)
+        if world.played:
+            break
+    assert world.played == ["t-Next One"]
+    loop.close()
+
+
+def test_stale_background_plan_is_discarded_after_track_change(tmp_path):
+    src = SlowSource(cands())
+    loop, world, clock, logs = build_bg(tmp_path, src)
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(6):
+        loop.step(); clock.sleep(1)
+    assert src.started.wait(2)
+    stale = loop.state.planning
+    world.start("User Choice", "Someone", duration=300, tidal_id="user")
+    loop.step()
+    assert loop.state.planning is None and loop.state.current.title == "User Choice"
+    src.release.set()
+    assert wait_for(lambda: stale.done())
+    loop.step()
+    assert loop.state.plan is None or loop.state.plan.seed.title == "User Choice"
+    loop.close()
+
+
+def test_planner_exception_becomes_a_note(tmp_path):
+    class Boom:
+        name = "boom"
+        def available(self): return True, ""
+        def candidates(self, seeds, limit): raise RuntimeError("kaboom")
+    loop, world, clock, logs = build_bg(tmp_path, Boom())
+    loop.engine.plan = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("engine exploded"))
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(8):
+        loop.step(); clock.sleep(1)
+    assert wait_for(lambda: loop.state.planning is None or loop.state.planning.done())
+    loop.step()
+    assert loop.state.plan is not None and any("engine exploded" in n for n in loop.state.plan.notes)
+    loop.close()

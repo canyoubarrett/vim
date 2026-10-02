@@ -85,7 +85,10 @@ class CdpConnection:
     def __init__(self, ws_url: str, timeout: float = 10.0):
         import websocket  # websocket-client; imported lazily
 
-        self._ws = websocket.create_connection(ws_url, timeout=timeout, suppress_origin=True)
+        # Chromium rejects CDP upgrades that carry an Origin header, and the
+        # debug port is loopback only, so never route it through a proxy.
+        self._ws = websocket.create_connection(ws_url, timeout=timeout, suppress_origin=True,
+                                               http_no_proxy=["127.0.0.1", "localhost", "::1"])
         self._next_id = 0
 
     def call(self, method: str, params: Optional[dict] = None, timeout: float = 10.0) -> dict:
@@ -122,8 +125,11 @@ class CdpConnection:
             pass
 
 
+_LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _default_http_get(url: str, timeout: float) -> str:
-    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (loopback only)
+    with _LOOPBACK_OPENER.open(url, timeout=timeout) as resp:  # loopback only, never proxied
         return resp.read().decode("utf-8", "replace")
 
 

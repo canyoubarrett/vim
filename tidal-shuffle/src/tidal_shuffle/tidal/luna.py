@@ -25,9 +25,11 @@ class LunaApi:
         self.token = token
         self._open = opener or self._default_open
 
-    @staticmethod
-    def _default_open(req: urllib.request.Request, timeout: float) -> bytes:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (loopback only)
+    _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    @classmethod
+    def _default_open(cls, req: urllib.request.Request, timeout: float) -> bytes:
+        with cls._opener.open(req, timeout=timeout) as resp:  # loopback only, never proxied
             return resp.read()
 
     def _request(self, method: str, path: str, body: Optional[dict] = None, timeout: float = 5.0) -> Any:

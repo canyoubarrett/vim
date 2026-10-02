@@ -62,18 +62,21 @@ def build_catalog(cfg: AppConfig, printer: Logger = print, interactive: bool = T
 def build_sources(cfg: AppConfig, catalog: Optional[TidalCatalog], logger: Optional[Logger] = None) -> list[Source]:
     """Instantiate the configured sources, in priority order. Unknown names were
     rejected by the config loader already."""
+    from .sources.spotify_api import SpotifyApiSource
+
+    api: Optional[SpotifyApiSource] = None
+    if cfg.spotify.has_api_credentials:
+        api = SpotifyApiSource(cfg.spotify.client_id, cfg.spotify.client_secret, market=cfg.spotify.market,
+                               vibe=cfg.spotify.vibe, log=logger)
+
     out: list[Source] = []
     for name in cfg.sources:
         if name == "spotify-app":
-            from .applescript import default_runner
-            from .sources.spotify_app import SpotifyAppSource
-
-            out.append(SpotifyAppSource(cfg.spotify.app, runner=default_runner(), log=logger, catalog=catalog))
+            out.append(build_spotify_app(cfg, catalog, api, logger))
         elif name == "spotify-api":
-            from .sources.spotify_api import SpotifyApiSource
-
-            out.append(SpotifyApiSource(cfg.spotify.client_id, cfg.spotify.client_secret, market=cfg.spotify.market,
-                                        vibe=cfg.spotify.vibe, log=logger))
+            out.append(api if api is not None else SpotifyApiSource(
+                cfg.spotify.client_id, cfg.spotify.client_secret, market=cfg.spotify.market,
+                vibe=cfg.spotify.vibe, log=logger))
         elif name == "lastfm":
             from .sources.lastfm import LastfmSource
 
@@ -87,6 +90,30 @@ def build_sources(cfg: AppConfig, catalog: Optional[TidalCatalog], logger: Optio
 
             out.append(TidalRadioSource(catalog, limit=cfg.tidal.radio_limit))
     return out
+
+
+def build_spotify_app(cfg: AppConfig, catalog: Optional[TidalCatalog], api=None, logger: Optional[Logger] = None):
+    """The Spotify desktop source with every configured way of finding songs on Spotify."""
+    import re
+
+    from . import paths
+    from .applescript import default_runner
+    from .cache import DiskCache
+    from .sources.odesli import OdesliMapper
+    from .sources.spotify_app import SpotifyAppSource
+    from .sources.spotify_ids import ListenBrainzSpotifyIds, OdesliSpotifyIds, SpotifyApiIds
+    from .spotify_ui import SpotifyUI
+
+    app_cfg = cfg.spotify.app
+    lookups = [ListenBrainzSpotifyIds(log=logger),
+               OdesliSpotifyIds(OdesliMapper(api_key=app_cfg.odesli_api_key, log=logger), catalog, log=logger)]
+    if api is not None:
+        lookups.insert(0, SpotifyApiIds(api))
+    ui = SpotifyUI(label_pattern="^" + re.escape(app_cfg.ui_label_prefix) + r"(?P<rest>.+)$",
+                   by_word=app_cfg.ui_label_by, log=logger)
+    cache = DiskCache(paths.CONFIG_DIR / "cache" / "spotify_ids.json", ttl=180 * 86400)
+    return SpotifyAppSource(app_cfg, runner=default_runner(), log=logger, catalog=catalog,
+                            id_lookups=lookups, ui=ui, id_cache=cache)
 
 
 def build_nowplaying(cfg: AppConfig, cdp: Optional[TidalCdp], logger: Optional[Logger] = None) -> NowPlayingBackend:

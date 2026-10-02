@@ -50,10 +50,15 @@ class DeezerSource:
         key = (path, tuple(sorted((k, str(v)) for k, v in params.items())))
         if key in self._cache:
             return self._cache[key]  # type: ignore[return-value]
-        data = get_json(self._client, f"{API}{path}", params=params or None, sleep=self._sleep)
-        if isinstance(data, dict) and data.get("error"):
-            err = data["error"]
+        for attempt in range(2):
+            data = get_json(self._client, f"{API}{path}", params=params or None, sleep=self._sleep)
+            err = data.get("error") if isinstance(data, dict) else None
             code = err.get("code") if isinstance(err, dict) else None
+            if err and code in (4, 700) and attempt == 0:  # quota / busy: Deezer asks clients to wait
+                self._sleep(5.0)
+                continue
+            break
+        if err:
             if code == 800:  # "no data"
                 data = {"data": []}
             else:
@@ -65,7 +70,7 @@ class DeezerSource:
     def find_track(self, seed: Seed) -> Optional[dict]:
         if seed.isrc:
             try:
-                t = self._get(f"/track/isrc/{seed.isrc}")
+                t = self._get(f"/track/isrc:{seed.isrc}")
                 if t.get("id"):
                     return t
             except HttpError:

@@ -1,0 +1,10 @@
+{
+  "name": "fake-tidal",
+  "private": true,
+  "description": "Simulated TIDAL desktop app (web player DOM over the Chrome DevTools Protocol) for tidal-shuffle end-to-end tests",
+  "type": "module",
+  "dependencies": {
+    "jsdom": "^24.0.0",
+    "ws": "^8.16.0"
+  }
+}

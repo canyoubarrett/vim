@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Fake macOS `open`: launches the fake TIDAL app, the fake Spotify, or follows tidal:// links."""
+import os
+import subprocess
+import sys
+import urllib.parse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _fakecommon import FAKE_DIR, log, save_spotify_state, spotify_state, tidal  # noqa: E402
+
+args = sys.argv[1:]
+log("open", " ".join(args))
+if "-a" in args and "--args" in args:
+    extra = args[args.index("--args") + 1:]
+    port = next(a.split("=", 1)[1] for a in extra if a.startswith("--remote-debugging-port="))
+    proc = subprocess.Popen(
+        [os.environ["FAKE_NODE"], os.environ["FAKE_SERVER"], port, os.path.join(FAKE_DIR, "catalog.json"),
+         os.path.join(FAKE_DIR, "tidal.log")],
+        stdout=open(os.path.join(FAKE_DIR, "tidal.out"), "a"), stderr=subprocess.STDOUT, start_new_session=True)
+    with open(os.path.join(FAKE_DIR, "tidal.pid"), "w") as f:
+        f.write(str(proc.pid))
+elif "-b" in args and "com.spotify.client" in args:
+    st = spotify_state()
+    st["running"] = True
+    save_spotify_state(st)
+else:
+    urls = [a for a in args if a.startswith("tidal://")]
+    if not urls:
+        print(f"open: unsupported arguments {args}", file=sys.stderr)
+        sys.exit(1)
+    tidal("/__open?url=" + urllib.parse.quote(urls[0], safe=""))

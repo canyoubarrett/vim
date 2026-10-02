@@ -17,9 +17,9 @@ class Server:
     def __call__(self, request):
         self.paths.append(request.url.path + ("?" + str(request.url.query, "utf-8") if request.url.query else ""))
         p = request.url.path
-        if p == "/track/isrc/ISRC1":
+        if p == "/track/isrc:ISRC1":
             return httpx.Response(200, json={"id": 7, "title": "Seed Song", "isrc": "ISRC1", "artist": {"id": 42, "name": "Seed Artist"}})
-        if p.startswith("/track/isrc/"):
+        if p.startswith("/track/isrc:"):
             return httpx.Response(200, json={"error": {"type": "DataException", "message": "no data", "code": 800}})
         if p == "/search":
             return httpx.Response(200, json={"data": [dz_track(7, "Seed Artist", 42, "Seed Song"), dz_track(8, "Other", 9, "Seed Song (Live)")]})
@@ -43,7 +43,7 @@ def test_isrc_first_then_radio():
     src = make(srv)
     seed = Seed("Seed Song", "Seed Artist", isrc="ISRC1")
     cands = src.candidates([seed], 10)
-    assert srv.paths[0] == "/track/isrc/ISRC1"
+    assert srv.paths[0] == "/track/isrc:ISRC1"
     assert [c.title for c in cands] == ["Song 1", "Song 2", "Song 3", "Song 4"]  # seed removed
     assert cands[0].source == "deezer" and cands[0].duration == 200.0 and cands[0].score > cands[-1].score
 

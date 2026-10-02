@@ -24,10 +24,17 @@ def test_get_json_honours_retry_after_cap():
     n = {"c": 0}
     def handler(request):
         n["c"] += 1
-        return httpx.Response(429, headers={"Retry-After": "9999"}) if n["c"] == 1 else httpx.Response(200, json={})
+        return httpx.Response(429, headers={"Retry-After": "40"}) if n["c"] == 1 else httpx.Response(200, json={})
     client = httpx.Client(transport=httpx.MockTransport(handler))
     get_json(client, "https://x", sleep=waits.append, max_retry_after=5)
     assert waits == [5]
+
+
+def test_get_json_gives_up_on_hours_long_rate_limits():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429, headers={"Retry-After": "7200"})))
+    with pytest.raises(HttpError) as e:
+        get_json(client, "https://x", sleep=lambda s: None, max_retry_after=30)
+    assert e.value.status == 429
 
 
 def test_get_json_non_json_body():

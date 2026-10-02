@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -32,6 +33,8 @@ class LoopState:
     recent_seeds: list[Seed] = field(default_factory=list)
     failed_keys: set = field(default_factory=set)
     pending: Optional[NowPlaying] = None   # candidate new track awaiting confirmation
+    planning: Optional[Future] = None      # background plan in flight
+    generation: int = 0                    # bumps on every track change; stale plans are dropped
     picks_played: int = 0
     tracks_seen: int = 0
 
@@ -48,7 +51,10 @@ class ShuffleLoop:
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        background: bool = False,
     ):
+        """``background=True`` plans on a worker thread so a slow source (the
+        Spotify app harvest can take 30 s or more) never delays a hand-off."""
         self.config = config
         self.engine = engine
         self.player = player
@@ -60,6 +66,8 @@ class ShuffleLoop:
         self._sleep = sleep
         self.state = LoopState()
         self._announced_idle = False
+        self._executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tidal-shuffle-planner") if background else None)
 
     # -- helpers --------------------------------------------------------------
     def remaining(self, np: Optional[NowPlaying], now: float) -> Optional[float]:
@@ -115,6 +123,8 @@ class ShuffleLoop:
             if st.anchor is None or st.current is None:
                 st.anchor = Seed.from_now_playing(np)
         st.tracks_seen += 1
+        st.generation += 1
+        st.planning = None  # a plan still running for the previous song is ignored when it lands
         st.current = np
         st.started_at = now - pos
         st.last_seen = now
@@ -126,15 +136,22 @@ class ShuffleLoop:
         st.failed_keys = set()
         st.pending = None
 
-    def plan_now(self, dry_run: bool = False) -> Optional[Plan]:
+    def _compute_plan(self, seed: Seed, anchor: Optional[Seed], recent: list, exclude: Optional[set]) -> Plan:
+        try:
+            return self.engine.plan(seed, anchor=anchor, recent=recent, exclude_keys=exclude)
+        except Exception as e:  # never let planning take the loop down
+            plan = Plan(seed=seed)
+            plan.notes.append(f"planning failed: {e}")
+            return plan
+
+    def _plan_inputs(self):
         st = self.state
-        if st.current is None:
-            return None
-        seed = Seed.from_now_playing(st.current)
-        plan = self.engine.plan(seed, anchor=st.anchor, recent=st.recent_seeds,
-                                exclude_keys=st.failed_keys or None)
+        return (Seed.from_now_playing(st.current), st.anchor, list(st.recent_seeds), set(st.failed_keys) or None)
+
+    def _apply_plan(self, plan: Plan, dry_run: bool) -> Plan:
+        st = self.state
         st.plan = plan
-        if plan.seed.duration and st.current.duration is None:
+        if plan.seed.duration and st.current is not None and st.current.duration is None:
             st.current.duration = plan.seed.duration
         if plan.primary is not None:
             backups = ", ".join(p.track.label() for p in plan.backups)
@@ -147,6 +164,46 @@ class ShuffleLoop:
         else:
             self.log("⚠ could not find anything to play next: " + "; ".join(plan.notes or ["no reason given"]))
         return plan
+
+    def plan_now(self, dry_run: bool = False) -> Optional[Plan]:
+        """Plan synchronously for the current song."""
+        st = self.state
+        if st.current is None:
+            return None
+        return self._apply_plan(self._compute_plan(*self._plan_inputs()), dry_run)
+
+    def request_plan(self, dry_run: bool = False) -> None:
+        """Plan for the current song, on the worker thread when there is one."""
+        st = self.state
+        if st.current is None or st.planning is not None:
+            return
+        if self._executor is None:
+            self.plan_now(dry_run=dry_run)
+            return
+        generation = st.generation
+        future = self._executor.submit(self._compute_plan, *self._plan_inputs())
+        future.generation = generation  # type: ignore[attr-defined]
+        st.planning = future
+
+    def collect_plan(self, dry_run: bool = False) -> None:
+        """Adopt a finished background plan if it still belongs to the current song."""
+        st = self.state
+        fut = st.planning
+        if fut is None or not fut.done():
+            return
+        st.planning = None
+        if getattr(fut, "generation", None) != st.generation or st.current is None:
+            return
+        try:
+            plan = fut.result()
+        except Exception as e:  # _compute_plan already catches; belt and braces
+            plan = Plan(seed=Seed.from_now_playing(st.current))
+            plan.notes.append(f"planning failed: {e}")
+        self._apply_plan(plan, dry_run)
+
+    def close(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def queue_pick(self, pick: Pick) -> bool:
         """Hand the pick to TIDAL's own queue (gapless; needs TidaLuna)."""
@@ -253,8 +310,10 @@ class ShuffleLoop:
         if st.current.playing is False and not st.handed_off:
             return cfg.poll_interval  # paused: nothing to do until it resumes
 
-        if st.plan is None and (now - st.started_at) >= cfg.plan_after_seconds:
-            self.plan_now(dry_run=dry_run)
+        self.collect_plan(dry_run=dry_run)
+        if st.plan is None and st.planning is None and (now - st.started_at) >= cfg.plan_after_seconds:
+            self.request_plan(dry_run=dry_run)
+            self.collect_plan(dry_run=dry_run)
 
         rem = self.remaining(np if tidal_live else None, now)
         if st.plan is not None and st.plan.primary is not None and not dry_run and st.queued is None:
@@ -284,14 +343,19 @@ class ShuffleLoop:
 
     def run(self, dry_run: bool = False, once: bool = False, max_iterations: Optional[int] = None) -> None:
         iterations = 0
-        while True:
-            delay = self.step(dry_run=dry_run)
-            iterations += 1
-            if once and self.state.plan is not None:
-                return
-            if max_iterations is not None and iterations >= max_iterations:
-                return
-            self._sleep(max(0.05, delay))
+        try:
+            while True:
+                delay = self.step(dry_run=dry_run)
+                iterations += 1
+                if once and self.state.plan is not None:
+                    return
+                if max_iterations is not None and iterations >= max_iterations:
+                    return
+                if self.state.planning is not None:
+                    delay = min(delay, self.config.player.near_end_poll_interval)
+                self._sleep(max(0.05, delay))
+        finally:
+            self.close()
 
     def skip_now(self) -> bool:
         """Plan (if needed) and start the next pick immediately."""
