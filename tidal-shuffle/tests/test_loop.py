@@ -811,3 +811,18 @@ def test_preset_command_applies_it_and_chooses_the_next_song_again(tmp_path):
     loop.post("preset:x")
     loop.handle_commands()
     assert any(m.startswith("⚠ preset x: nope") for m in logs)
+
+
+
+def test_max_poll_checks_now_playing_often_while_the_screen_is_up(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    waits = []
+    loop._sleep = lambda d: (waits.append(d), clock.sleep(d))
+    loop.run(max_iterations=3)
+    assert max(waits) > 1.0
+    waits.clear()
+    loop._closed = False
+    loop.max_poll = 0.5
+    loop.run(max_iterations=3)
+    assert waits and max(waits) <= 0.5

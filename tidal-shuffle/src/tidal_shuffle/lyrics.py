@@ -30,6 +30,7 @@ _META_RE = re.compile(r"^\[[a-z]{1,8}:.*\]\s*$", re.I)
 class LyricLine:
     time: Optional[float]   # seconds; None for unsynced lyrics
     text: str
+    words: Optional[list] = None   # [(seconds, character offset)] from enhanced LRC word stamps
 
 
 @dataclass
@@ -73,13 +74,32 @@ class Lyrics:
         return Lyrics(lines=out, synced=True, source=self.source, estimated=True)
 
     def to_json(self) -> dict:
-        return {"lines": [[l.time, l.text] for l in self.lines], "synced": self.synced,
+        return {"lines": [[l.time, l.text] + ([l.words] if l.words else []) for l in self.lines], "synced": self.synced,
                 "source": self.source, "instrumental": self.instrumental}
 
     @classmethod
     def from_json(cls, data: dict) -> "Lyrics":
-        return cls(lines=[LyricLine(t, s) for t, s in data.get("lines", [])], synced=bool(data.get("synced")),
+        return cls(lines=[LyricLine(row[0], row[1], [tuple(w) for w in row[2]] if len(row) > 2 and row[2] else None)
+                          for row in data.get("lines", [])], synced=bool(data.get("synced")),
                    source=str(data.get("source", "")), instrumental=bool(data.get("instrumental")))
+
+
+_WORD_RE = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
+
+
+def _word_stamps(raw: str) -> tuple[str, list]:
+    """Text without enhanced-LRC word stamps (``<mm:ss.xx>word``), and the
+    stamps as (seconds, character offset into the cleaned text)."""
+    text, stamps, pos = "", [], 0
+    for m in _WORD_RE.finditer(raw):
+        text += raw[pos:m.start()]
+        frac = m.group(3) or "0"
+        stamps.append((int(m.group(1)) * 60 + int(m.group(2)) + int(frac) / (10 ** len(frac)), len(text)))
+        pos = m.end()
+    text += raw[pos:]
+    lead = len(text) - len(text.lstrip())
+    clean = text.strip()
+    return clean, [(t, max(0, min(len(clean), at - lead))) for t, at in stamps]
 
 
 def parse_lrc(text: str) -> list[LyricLine]:
@@ -107,10 +127,10 @@ def parse_lrc(text: str) -> list[LyricLine]:
             pos = m.end()
         if not tags:
             continue  # metadata such as [ar:...] or untimed text
-        words = line[pos:].strip()
-        words = re.sub(r"<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>", "", words).strip()  # enhanced LRC word stamps
+        text, stamps = _word_stamps(line[pos:])
         for t in tags:
-            out.append(LyricLine(max(0.0, t - offset), words))
+            words = [(max(0.0, w - offset), at) for w, at in stamps] if stamps and len(tags) == 1 else None
+            out.append(LyricLine(max(0.0, t - offset), text, words))
     out.sort(key=lambda l: l.time or 0.0)
     return out
 

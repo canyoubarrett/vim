@@ -37,9 +37,10 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
+from .fx import Backdrop, Canvas, segments, spring
 from .lyrics import Lyrics, LyricsService
 from .theme import Theme, theme as make_theme
-from .visualizer import LogoScene, lerp
+from .visualizer import LogoScene, lerp, smoothstep
 
 KEYS_LINE = "space play/pause · n next pick · f flow · p presets · l lyrics · q quit"
 
@@ -116,18 +117,89 @@ class GridView:
             yield Segment.line()
 
 
+def _wrap(text: str, width: int) -> list[tuple[str, int]]:
+    """Wrapped parts of a line with each part's character offset into it."""
+    out, at = [], 0
+    for part in (textwrap.wrap(text, width) or [""]):
+        o = text.find(part, at)
+        o = at if o < 0 else o
+        out.append((part, o))
+        at = o + len(part)
+    return out
+
+
+def sung_chars(lyrics: Lyrics, idx: int, position: float, lead: float = 0.25) -> float:
+    """How far the singing has got into line ``idx``, in characters: from the
+    word stamps when the lyrics have them (enhanced LRC), else spread over the
+    time the line is likely sung (until the next line, at a singing pace)."""
+    line = lyrics.lines[idx]
+    text = line.text.strip()
+    n = len(text)
+    if not n or line.time is None:
+        return 0.0
+    pos = position + lead
+    nxt = next((l.time for l in lyrics.lines[idx + 1:] if l.time is not None), None)
+    if line.words:
+        stamps = list(line.words) + [((nxt if nxt is not None else line.words[-1][0] + 0.8), n)]
+        done = 0.0
+        for (t0, a0), (t1, a1) in zip(stamps, stamps[1:]):
+            if pos >= t1:
+                done = float(a1)
+            elif pos >= t0:
+                done = a0 + (a1 - a0) * (pos - t0) / max(0.05, t1 - t0)
+                break
+            else:
+                break
+        return done
+    gap = (nxt - line.time) if nxt is not None else n * 0.12
+    dur = max(0.6, min(gap * 0.92, max(1.5, n * 0.11)))
+    return n * max(0.0, min(1.0, (pos - line.time) / dur))
+
+
+def _word_starts(text: str) -> list[int]:
+    """For every character, where its word starts (a space goes with the next word)."""
+    starts = [0] * len(text)
+    begin = 0
+    for k, ch in enumerate(text):
+        if ch != " " and (k == 0 or text[k - 1] == " "):
+            begin = k
+        starts[k] = begin
+    nxt = len(text)
+    for k in range(len(text) - 1, -1, -1):
+        if text[k] == " ":
+            starts[k] = nxt
+        else:
+            nxt = starts[k]
+    return starts
+
+
+def sweep_cells(part: str, offset: int, line_text: str, sung: float, th: Theme) -> list:
+    """The cells of (part of) the line being sung: words already reached are
+    bold and bright, the rest of the line waits, dimmer, on the same bar."""
+    starts = _word_starts(line_text)
+    lit_fg = th.current_fg
+    wait_fg = lerp(th.current_bg, th.current_fg, 0.42)
+    cells = []
+    for k, ch in enumerate(part):
+        o = offset + k
+        lit = o < len(starts) and starts[o] <= sung
+        cells.append((ch, lit_fg if lit else wait_fg, lit, th.current_bg))
+    return cells
+
+
 def lyric_rows(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int,
-               height: int) -> list[tuple[str, str]]:
-    """The rows to show, centred on the line being sung: (text, kind), kind being
-    "current", "past:N", "next:N" (N = lines away), "plain", "countin" or "blank"."""
+               height: int) -> list[tuple[str, str, int]]:
+    """The rows to show, centred on the line being sung: (text, kind, offset),
+    kind being "current", "past:N", "next:N" (N = lines away), "plain",
+    "countin" or "blank", offset where the row starts in its lyric line."""
     wrap = max(10, width - 8)
-    rows: list[tuple[str, int]] = []          # (text, lyric line index)
+    rows: list[tuple[str, int, int]] = []          # (text, lyric line index, offset)
     starts: list[int] = []
     for i, line in enumerate(lyrics.lines):
         starts.append(len(rows))
         text = line.text.strip() or ("♪" if lyrics.synced else "")
-        for part in (textwrap.wrap(text, wrap) or [""]):
-            rows.append((part, i))
+        for part, off in _wrap(text, wrap):
+            rows.append((part, i, off))
     if not rows:
         return []
     pos = position or 0.0
@@ -141,27 +213,27 @@ def lyric_rows(lyrics: Lyrics, position: Optional[float], duration: Optional[flo
         current = -1
         frac = (pos / duration) if duration else 0.0
         top = int(max(0.0, min(1.0, frac)) * (len(rows) - 1)) - height // 2
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, int]] = []
     for r in range(top, top + height):
         if r < 0 or r >= len(rows):
-            out.append(("", "blank"))
+            out.append(("", "blank", 0))
             continue
-        text, i = rows[r]
+        text, i, off = rows[r]
         if not lyrics.synced:
-            out.append((text, "plain"))
+            out.append((text, "plain", off))
         elif i == current:
-            out.append((text, "current"))
+            out.append((text, "current", off))
         elif i < current:
-            out.append((text, f"past:{current - i}"))
+            out.append((text, f"past:{current - i}", off))
         else:
-            out.append((text, f"next:{i - current}"))
+            out.append((text, f"next:{i - current}", off))
     # count-in before the first line: three dots filling up
     if lyrics.synced and current < 0 and lyrics.lines and lyrics.lines[0].time:
         first_t = lyrics.lines[0].time
         filled = int(3 * max(0.0, min(1.0, pos / first_t)))
         mid = height // 2
         if 0 <= mid - 1 < len(out):
-            out[mid - 1] = ("● " * filled + "○ " * (3 - filled), "countin")
+            out[mid - 1] = ("● " * filled + "○ " * (3 - filled), "countin", 0)
     return out
 
 
@@ -175,16 +247,36 @@ def _line_color(kind: str, th: Theme):
     return th.text
 
 
+def _fade_grid(grid: list, alpha: float, th: Theme) -> list:
+    """Fade a grid towards the panel colour (``alpha`` 1 = as is, 0 = gone)."""
+    if alpha >= 0.999:
+        return grid
+    if alpha < 0.06:                       # as good as gone
+        return [[(" ", None)] * len(row) for row in grid]
+    out = []
+    for row in grid:
+        new = []
+        for c in row:
+            if c[0] == " " and (len(c) < 4 or c[3] is None):
+                new.append(c)
+                continue
+            fg = lerp(th.bg, c[1] or th.text, alpha)
+            bg = lerp(th.bg, c[3], alpha) if len(c) > 3 and c[3] is not None else None
+            new.append((c[0], fg, (c[2] if len(c) > 2 else False) and alpha > 0.5, bg))
+        out.append(new)
+    return out
+
+
 def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, height: int, th: Theme) -> Optional[list]:
     """All the lyrics at once, in two columns (or one, if that fits), split at a
-    verse break; the current line inverted. None when they do not fit."""
+    verse break; the current line on a bar. None when they do not fit."""
     col_w = (width - 4) // 2
 
-    def wrapped(wrap_at: int) -> list[tuple[str, int]]:
-        out: list[tuple[str, int]] = []
+    def wrapped(wrap_at: int) -> list[tuple[str, int, int]]:
+        out: list[tuple[str, int, int]] = []
         for i, line in enumerate(lyrics.lines):
-            for part in (textwrap.wrap(line.text.strip(), max(8, wrap_at)) or [""]):
-                out.append((part, i))
+            for part, off in _wrap(line.text.strip(), max(8, wrap_at)):
+                out.append((part, i, off))
         while out and not out[0][0]:
             out.pop(0)
         while out and not out[-1][0]:
@@ -195,11 +287,12 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
     if not rows:
         return None
     current = lyrics.index_at(position or 0.0) if lyrics.synced else -1
+    sung = sung_chars(lyrics, current, position or 0.0) if current >= 0 else 0.0
     grid = [[(" ", None)] * width for _ in range(height)]
 
     def paint(column: list, x0: int, w: int, top: int) -> None:
-        block = max((len(t) for t, i in column if i == current), default=0)
-        for r, (text, i) in enumerate(column):
+        block = max((len(t) for t, i, _ in column if i == current), default=0)
+        for r, (text, i, off) in enumerate(column):
             y = top + r
             if y >= height:
                 return
@@ -209,8 +302,8 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
                 lo = x0 + max(0, (w - block) // 2 - 2)
                 for c in range(lo, min(x0 + w, lo + block + 4)):
                     row[c] = (" ", th.current_fg, True, th.current_bg)
-                for k, ch in enumerate(text):
-                    row[start + k] = (ch, th.current_fg, True, th.current_bg)
+                for k, cell in enumerate(sweep_cells(text, off, lyrics.lines[i].text.strip(), sung, th)):
+                    row[start + k] = cell
             else:
                 kind = "plain" if current < 0 else (f"past:{current - i}" if i < current else f"next:{i - current}")
                 color = _line_color(kind, th)
@@ -245,20 +338,23 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
 
 
 def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int, height: int,
-                th: Theme) -> list:
-    """Lyric rows centred in the panel; the line being sung is inverted.
-    Lyrics without real timing are shown whole, in two columns, when they fit."""
+                th: Theme, alpha: float = 1.0) -> list:
+    """Lyric rows centred in the panel; the line being sung on a bar, its words
+    lighting up as they are sung. Lyrics without real timing are shown whole,
+    in two columns, when they fit. ``alpha`` fades the whole thing."""
     if lyrics.estimated or not lyrics.synced:
         whole = two_column_grid(lyrics, position, width, height, th)
         if whole is not None:
-            return whole
+            return _fade_grid(whole, alpha, th)
     grid = [[(" ", None)] * width for _ in range(height)]
     rows = lyric_rows(lyrics, position, duration, width, height)
+    current = lyrics.index_at(position or 0.0) if lyrics.synced else -1
+    sung = sung_chars(lyrics, current, position or 0.0) if current >= 0 else 0.0
     # a wrapped current line gets one even bar, as wide as its longest row
-    block = max((len(t[:max(1, width - 2)]) for t, k in rows if k == "current"), default=0)
+    block = max((len(t[:max(1, width - 2)]) for t, k, _ in rows if k == "current"), default=0)
     block_lo = max(0, (width - block) // 2 - 2)
     block_hi = min(width, block_lo + block + 4)
-    for r, (text, kind) in enumerate(rows):
+    for r, (text, kind, off) in enumerate(rows):
         if r >= height or (not text and kind != "current"):
             continue
         text = text[:max(1, width - 2)]
@@ -267,14 +363,15 @@ def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[fl
         if kind == "current":
             for c in range(block_lo, block_hi):
                 row[c] = (" ", th.current_fg, True, th.current_bg)
-            for i, ch in enumerate(text):
-                row[start + i] = (ch, th.current_fg, True, th.current_bg)
+            line_text = lyrics.lines[current].text.strip() if current >= 0 else text
+            for i, cell in enumerate(sweep_cells(text, off, line_text, sung, th)):
+                row[start + i] = cell
         else:
             color = _line_color(kind, th)
             for i, ch in enumerate(text):
                 row[start + i] = (ch, color)
         grid[r] = row
-    return grid
+    return _fade_grid(grid, alpha, th)
 
 
 class ShuffleTUI:
@@ -291,7 +388,25 @@ class ShuffleTUI:
         self.th = theme or make_theme(getattr(getattr(config, "ui", None), "theme", "mocha"))
         if scene is not None:
             scene.logo, scene.glow, scene.shadow, scene.bg = self.th.logo, self.th.logo_glow, self.th.shadow, self.th.bg
+            scene.p = dict(scene.p, **self.th.p)
         self.scene = scene
+        ui = getattr(config, "ui", None)
+        self.backdrop = Backdrop(self.th.p, light=self.th.name == "latte") if getattr(ui, "backdrop", True) else None
+        self.glass = float(getattr(ui, "glass", 0.22))
+        # transitions: (value, velocity) springs, so nothing ever jumps
+        self._layout = [0.0, 0.0]     # 0: the logo alone, 1: logo and lyrics side by side
+        self._content = [0.0, 0.0]    # how visible the lyrics text is
+        self._menu = [0.0, 0.0]       # the preset menu
+        self._layout_goal = 0.0
+        self._shown: Optional[Lyrics] = None     # lyrics in the panel (the old song's, while they fade)
+        self._shown_pos: tuple = (None, None)    # their position and length, frozen once their song is over
+        self._hold_since: Optional[float] = None
+        self._last_frame: Optional[float] = None
+        self._status = "waiting"
+        self._art_key = None
+        self._art_prev = None
+        self._art_grid = None
+        self._art_since = 0.0
         self.artwork = artwork
         self.history = history if history is not None else getattr(loop, "history", None)
         self.post = post or getattr(loop, "post", None) or (lambda cmd: None)
@@ -455,19 +570,37 @@ class ShuffleTUI:
         return out
 
     def art(self, rows: int):
-        """The cover of the song playing (or a placeholder), ``rows`` tall and square."""
+        """The cover of the song playing (or a placeholder), ``rows`` tall and
+        square; a new cover dissolves in over the old one."""
         from .artwork import placeholder
 
         w = rows * 2
         p = self.th.p
         cur = self.loop.state.current
         img = None
+        song = f"{cur.artist}|{cur.title}" if cur is not None else ""
         if cur is not None and self.artwork is not None:
-            img = self.artwork.get(f"{cur.artist}|{cur.title}", cur.tidal_id, cur.title, cur.artist)
+            img = self.artwork.get(song, cur.tidal_id, cur.title, cur.artist)
         if img is None or img == "pending":
+            key = ("placeholder", w)
             grid = placeholder(w, rows, p["mauve"], p["blue"], p["crust"])
         else:
-            grid = self.artwork.cells(f"{cur.artist}|{cur.title}", img, w, rows)
+            key = (song, id(img), w)
+            grid = self.artwork.cells(song, img, w, rows)
+        now = self._clock()
+        if key != self._art_key:
+            if self._art_grid is not None and len(self._art_grid) == rows:
+                self._art_prev = self._art_grid
+                self._art_since = now
+            self._art_key = key
+        self._art_grid = grid
+        k = smoothstep((now - self._art_since) / 0.7) if self._art_prev is not None else 1.0
+        if k < 1.0:
+            old = self._art_prev
+            grid = [[(c[0] if k > 0.5 else o[0], lerp(o[1], c[1], k), False, lerp(o[3], c[3], k))
+                     for c, o in zip(row, orow)] for row, orow in zip(grid, old)]
+        else:
+            self._art_prev = None
         return GridView(lambda _w, _h: grid), w
 
     # -- regions ---------------------------------------------------------------------------
@@ -539,18 +672,88 @@ class ShuffleTUI:
         return self._panel(GridView(lambda w, h: scene.frame(w, h, self._clock(), playing=live)), caption,
                            padding=(0, 0))
 
-    def lyrics_panel(self, lyr: Lyrics) -> Panel:
-        pos, duration, _ = self.position()
-        if not lyr.synced:
-            # no timing from the source: guess it from the song's length, so the
-            # lyrics still follow along (and show it in the title)
-            key = (id(lyr), duration)
-            if self._estimate_key != key:
-                self._estimate_key, self._estimate = key, lyr.estimate_timing(duration)
-            lyr = self._estimate
+    def lyrics_panel(self, lyr: Lyrics, pos: Optional[float], duration: Optional[float], alpha: float) -> Panel:
         title = f"Lyrics · {lyr.source}" + (" · timing estimated" if lyr.estimated else ("" if lyr.synced else " (not synced)"))
         th = self.th
-        return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th)), title, padding=(0, 0))
+        return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th, alpha=alpha)), title,
+                           padding=(0, 0))
+
+    # -- what the lyrics panel should show, and the transitions ------------------
+    def wanted_lyrics(self) -> tuple[Optional[Lyrics], str]:
+        """The lyrics that belong on screen right now, and why there are none.
+        The song's lyrics go the moment it is over: when it ends, when a
+        hand-off starts, or when TIDAL shows a different song (even before the
+        loop has confirmed it)."""
+        st = self.loop.state
+        if st.current is None:
+            return None, "waiting"
+        if self.view == "logo":
+            return None, "logo"
+        if getattr(st, "pending", None) is not None or getattr(st, "handed_off", False):
+            return None, "changing"
+        pos, duration, _ = self.position()
+        if duration and pos is not None and pos >= duration - 0.3:
+            return None, "changing"
+        lyr = self.current_lyrics()
+        if lyr == "pending":
+            return None, "pending"
+        if isinstance(lyr, Lyrics) and lyr.lines:
+            if not lyr.synced:
+                # no timing from the source: guess it from the song's length, so the
+                # lyrics still follow along (and say so in the title)
+                key = (id(lyr), duration)
+                if self._estimate_key != key:
+                    self._estimate_key, self._estimate = key, lyr.estimate_timing(duration)
+                lyr = self._estimate
+            return lyr, "ok"
+        if isinstance(lyr, Lyrics) and lyr.instrumental:
+            return None, "instrumental"
+        return None, "none"
+
+    def animate(self) -> None:
+        """Move the transitions one frame on. Old lyrics fade out first; the
+        logo glides wider or narrower; new lyrics fade in once there is room."""
+        now = self._clock()
+        dt = 0.0 if self._last_frame is None else now - self._last_frame
+        first = self._last_frame is None
+        self._last_frame = now
+        want, status = self.wanted_lyrics()
+        self._status = status
+        snap = first or dt <= 0                      # nothing to animate from: be there
+        if want is not None and self._shown is not want and (snap or self._shown is None or self._content[0] < 0.04):
+            self._shown = want                       # the old ones are gone: swap
+        showing_want = want is not None and self._shown is want
+        if showing_want:
+            self._shown_pos = self.position()[:2]    # frozen here once the song moves on
+        # the layout: room for lyrics while there are some; while a new song's are
+        # being looked up, stay as we are for a few seconds instead of gliding back and forth
+        if want is not None:
+            self._layout_goal, self._hold_since = 1.0, None
+        elif status in ("pending", "changing"):
+            if self._hold_since is None:
+                self._hold_since = now
+            if now - self._hold_since > 4.0:
+                self._layout_goal = 0.0
+        else:
+            self._layout_goal, self._hold_since = 0.0, None
+        content_goal = 1.0 if (showing_want and self._layout[0] > 0.8) else 0.0
+        menu_goal = 1.0 if self.menu_open else 0.0
+        if snap:
+            self._layout = [self._layout_goal, 0.0]
+            self._content = [1.0 if showing_want and self._layout_goal else 0.0, 0.0]
+            self._menu = [menu_goal, 0.0]
+        else:
+            dt = min(dt, 0.25)
+            self._layout = list(spring(*self._layout, self._layout_goal, dt, 5.5))
+            self._content = list(spring(*self._content, content_goal, dt, 24.0 if content_goal < 0.5 else 9.0))
+            self._menu = list(spring(*self._menu, menu_goal, dt, 14.0))
+        if want is None and self._content[0] < 0.01 and self._layout[0] < 0.01:
+            self._shown = None
+
+    def caption(self) -> str:
+        return {"waiting": "Alter Era", "logo": "Alter Era · l for lyrics", "pending": "Alter Era · looking for lyrics…",
+                "instrumental": "Alter Era · instrumental", "none": "Alter Era · no lyrics for this song"
+                }.get(self._status, "Alter Era")
 
     def up_next_panel(self) -> Panel:
         """The pick and its backups, then what played recently."""
@@ -638,39 +841,32 @@ class ShuffleTUI:
         self._menu_hits = hits
         return self._panel(text, "Presets", subtitle="p or esc to close")
 
-    def body(self, width: int, height: int = 0, top_row: int = HEADER_H):
-        """Logo and lyrics side by side (and Up next when there is room); the logo
-        alone when there are no lyrics; the preset menu when it is open."""
-        if self.menu_open:
-            return self.presets_panel(height, top_row)
-        lyr = self.current_lyrics() if self.view == "auto" else None
-        have = isinstance(lyr, Lyrics) and bool(lyr.lines)
-        side = width >= 130
-        if not have:
-            if self.loop.state.current is None:
-                caption = "Alter Era"
-            elif self.view == "logo":
-                caption = "Alter Era · l for lyrics"
-            elif lyr == "pending":
-                caption = "Alter Era · looking for lyrics…"
-            elif isinstance(lyr, Lyrics) and lyr.instrumental:
-                caption = "Alter Era · instrumental"
-            else:
-                caption = "Alter Era · no lyrics for this song"
-            main = self.logo_panel(caption)
-            if not side:
-                return main
-            row = Layout()
-            row.split_row(Layout(main, ratio=1), Layout(self.up_next_panel(), size=40))
-            return row
-        if width < 90 or self.scene is None:
-            return self.lyrics_panel(lyr)          # narrow window: the lyrics get the room
-        row = Layout()
-        parts = [Layout(self.logo_panel("Alter Era"), ratio=2), Layout(self.lyrics_panel(lyr), ratio=3)]
-        if side:
-            parts.append(Layout(self.up_next_panel(), size=40))
-        row.split_row(*parts)
-        return row
+    def body_regions(self, x: int, y: int, width: int, height: int, gap: int) -> list:
+        """(renderable, x, y, w, h, opacity) for the body: the logo, the lyrics
+        (fading, over the logo while it glides), Up next, and the preset menu."""
+        out = []
+        main_w = width
+        if width >= 130:
+            side_w = 40
+            main_w = width - side_w - gap
+            out.append((self.up_next_panel(), x + main_w + gap, y, side_w, height, 1.0))
+        L = max(0.0, min(1.0, self._layout[0]))
+        if main_w < 90 or self.scene is None:
+            logo_w, lyr_x, lyr_w = main_w, x, main_w      # narrow: the lyrics take the whole width, over the logo
+        else:
+            split = int(main_w * 2 / 5)
+            logo_w = int(round(main_w + (split - main_w) * L))
+            lyr_x, lyr_w = x + split + gap, main_w - split - gap
+        out.insert(0, (self.logo_panel(self.caption() if self._shown is None else "Alter Era"), x, y, logo_w, height, 1.0))
+        if self._shown is not None and L > 0.01:
+            pos, duration = self._shown_pos
+            alpha = max(0.0, min(1.0, self._content[0]))
+            out.append((self.lyrics_panel(self._shown, pos, duration, alpha), lyr_x, y, lyr_w, height,
+                        smoothstep((L - 0.3) / 0.7)))
+        m = max(0.0, min(1.0, self._menu[0]))
+        if self.menu_open or m > 0.01:
+            out.append((self.presets_panel(height, y), x, y, width, height, m if not self.menu_open else max(m, 0.02)))
+        return out
 
     def log_line(self, msg: str, dim: bool) -> Text:
         """A log line with its leading icon coloured by kind."""
@@ -723,25 +919,72 @@ class ShuffleTUI:
         self._toolbar_hits = hits
         return text
 
-    def render(self, width: int = 100, height: int = 40):
+    def energy(self) -> float:
+        """How energetic the music is, for the sky: the flow's target, else the pick's."""
+        plan = self.loop.state.plan
+        target = getattr(plan, "flow_target", None) if plan is not None else None
+        if target is not None:
+            return float(target)
+        pick = getattr(plan, "primary", None) if plan is not None else None
+        extra = getattr(getattr(pick, "candidate", None), "extra", None) or {}
+        return float(extra.get("energy", 0.5))
+
+    def regions(self, width: int, height: int) -> list:
+        """Where every panel goes: (renderable, x, y, w, h, opacity), back to front."""
+        self._menu_hits, self._toolbar_hits = [], []
+        mx = 2 if width >= 100 else (1 if width >= 60 else 0)
+        my = 1 if height >= 30 else 0
+        gap = 1 if height >= 30 else 0
+        gap_x = 2 if width >= 100 else 1
+        inner = width - 2 * mx
+        out = [(self.header(inner), mx, my, inner, HEADER_H, 1.0)]
+        if height < 14:
+            foot_y = my + HEADER_H
+            out.append((self.footer(max(3, height - foot_y - 1)), mx, foot_y, inner, max(3, height - foot_y - 1), 1.0))
+        else:
+            foot = 8 if height >= 34 else 6
+            foot_y = height - 1 - foot
+            body_y = my + HEADER_H + gap
+            body_h = max(3, foot_y - gap - body_y)
+            out.extend(self.body_regions(mx, body_y, inner, body_h, gap_x))
+            out.append((self.footer(foot), mx, foot_y, inner, foot, 1.0))
+        out.append((self.toolbar(height - 1, width), 0, height - 1, width, 1, 1.0))
+        self._hits = (self._menu_hits if self.menu_open else []) + self._toolbar_hits
+        return out
+
+    def compose(self, console: Console, options: ConsoleOptions, width: int, height: int):
+        """The whole screen as Segments: the sky, then the panels over it."""
+        th = self.th
         try:
-            layout = Layout()
-            self._menu_hits, self._toolbar_hits = [], []
-            if height < 14:
-                layout.split_column(Layout(self.header(width), size=HEADER_H),
-                                    Layout(self.footer(max(3, height - HEADER_H - 1))),
-                                    Layout(self.toolbar(height - 1, width), size=1))
+            self.animate()
+            playing = self.loop.state.current is not None and self.loop.state.current.playing is not False
+            if self.backdrop is not None:
+                cells = self.backdrop.frame(width, height, self._clock(), self.energy(), playing)
             else:
-                foot = 8 if height >= 34 else 6
-                body_h = height - HEADER_H - foot - 1
-                layout.split_column(Layout(self.header(width), size=HEADER_H),
-                                    Layout(self.body(width, body_h, HEADER_H), size=body_h),
-                                    Layout(self.footer(foot), size=foot),
-                                    Layout(self.toolbar(height - 1, width), size=1))
-            self._hits = self._menu_hits + self._toolbar_hits
-            return layout
+                cells = [[[" ", None, False, th.bg] for _ in range(width)] for _ in range(height)]
+            canvas = Canvas(cells, th.bg, th.text, glass=self.glass if self.backdrop is not None else 0.0)
+            for renderable, x, y, w, h, opacity in self.regions(width, height):
+                if w <= 0 or h <= 0 or opacity <= 0.01:
+                    continue
+                lines = console.render_lines(renderable, options.update(width=w, height=h), pad=True)
+                canvas.blit(lines, x, y, w, h, opacity)
+            if self.backdrop is not None:
+                canvas.sheen(self.backdrop._t, th.border, th.p["lavender"])
+            yield from segments(canvas.cells, style)
         except Exception as e:  # never let a render error take the screen down
-            return Text(f"display error: {e}")
+            yield from console.render(Text(f"display error: {e}", style(th.text)), options)
+
+    def render(self, width: int = 100, height: int = 40):
+        """The screen as a renderable of the given size (for previews and tests)."""
+        return _Sized(self, width, height)
+
+
+class _Sized:
+    def __init__(self, tui: "ShuffleTUI", width: int, height: int):
+        self.tui, self.width, self.height = tui, width, height
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield from self.tui.compose(console, options, self.width, self.height)
 
 
 class ScreenRenderable:
@@ -751,4 +994,4 @@ class ScreenRenderable:
         self.tui = tui
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        yield self.tui.render(options.max_width, options.height or console.size.height)
+        yield from self.tui.compose(console, options, options.max_width, options.height or console.size.height)

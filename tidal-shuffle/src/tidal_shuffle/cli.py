@@ -207,6 +207,7 @@ def run(dry_run, once, plain, **kwargs):
     if cfg.ui.screen == "full" and not plain and not once:
         if console.is_terminal:
             screen = _make_screen(cfg, rt, loop)
+            loop.max_poll = cfg.ui.track_poll     # see a new song (and drop the old lyrics) quickly
         else:
             console.print("[yellow]full-screen view off: the output is not a terminal (piped or redirected)[/yellow]")
     if screen is not None and console.color_system is None:
@@ -305,7 +306,7 @@ def _make_screen(cfg: AppConfig, rt, loop):
     scene = None
     if cfg.ui.visualizer:
         art = Path(cfg.ui.logo_file).expanduser() if cfg.ui.logo_file else None
-        scene = LogoScene(art_path=art, cell_aspect=cfg.ui.cell_aspect)
+        scene = LogoScene(art_path=art, cell_aspect=cfg.ui.cell_aspect, weather=cfg.ui.weather)
     artwork = None
     if cfg.ui.artwork and rt.catalog is not None:
         from .artwork import ArtworkService

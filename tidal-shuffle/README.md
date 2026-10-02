@@ -82,8 +82,19 @@ simply follows your choice.
   `~/.config/tidal-shuffle/cache/art`; `ui.artwork: false` turns it off),
   the song playing with a ▶ PLAYING / ⏸ PAUSED badge, a progress bar, the
   next pick, and the flow with its target energy as a meter;
-* on the left, the Alter Era logo, floating: it bobs, drifts and tilts, its
-  colour breathes, and its shadow shrinks as it rises. It is traced from the
+* behind everything, an animated sky: aurora curtains (cool colours for calm
+  music, warm for energetic, following the flow's target energy), twinkling
+  stars, the odd shooting star and slow bokeh drifting up. The panels are
+  glass: the sky glows faintly through them, and their borders catch its
+  light and a travelling sheen (`ui.backdrop: false` turns the sky off,
+  `ui.glass` sets how much shows through, 0 to 0.6);
+* on the left, the Alter Era logo, floating over water on a rainy night: it
+  bobs, drifts and tilts and its colour breathes; rain falls in two depths
+  (drawn in braille dots, so it moves smoothly), a beam of light slants down
+  from above onto the water with dust turning in it and the rain sparkling
+  where it crosses, the logo is reflected in the water, rippled and broken
+  up by the rain, rings spread where drops land, and now and then lightning
+  lights everything up twice (`ui.weather: false` for the logo alone). It is traced from the
   vector original (`assets/alter-era.svg`) into braille at whatever size the
   panel allows, so it stays crisp; if it looks too wide or narrow in your
   font, adjust `ui.cell_aspect` (a cell's width / height, 0.5 by default);
@@ -91,7 +102,9 @@ simply follows your choice.
   sung shown inverted on a solid bar (TIDAL's own synced lyrics first, then
   [LRCLIB](https://lrclib.net), free and keyless, which is searched again
   with a plainer title and the main artist when only plain lyrics turned
-  up). Lyrics without timing get estimated timing: the lines are spread over
+  up). The words of the line being sung light up (bold) as they are sung,
+  following the word timing when the lyrics have it (enhanced LRC) and the
+  singing pace otherwise. Lyrics without timing get estimated timing: the lines are spread over
   the song after a short intro, longer lines getting more time and verse
   breaks counting as pauses, and the title says "timing estimated"; they are
   shown whole, in two columns split at a verse break when needed, with the
@@ -103,6 +116,16 @@ simply follows your choice.
 * in a wide window (130 columns or more), an **Up next** card on the right:
   the pick and its backups with their energy, and what played recently;
 * at the bottom, the log and a row of key chips, which can be clicked.
+
+Nothing on the screen cuts: when a song ends, a hand-off starts or TIDAL
+shows a different song, its lyrics fade out at once (the screen checks for a
+new song every half second, `ui.track_poll`). If the next song has lyrics,
+they fade in where the old ones were; if it has none, the lyrics panel fades
+away and the logo glides over to fill the space, and glides back when lyrics
+return. Covers dissolve into each other and the preset menu fades in and out.
+All of this is drawn cell by cell in true colour; if your terminal struggles
+to keep up (Terminal.app can), lower `ui.fps` or turn off `ui.weather` or
+`ui.backdrop`.
 
 **Presets menu.** Press `p` (or click the `p presets` chip) to open the
 preset menu over the logo and lyrics. Presets are grouped (energy & sound,

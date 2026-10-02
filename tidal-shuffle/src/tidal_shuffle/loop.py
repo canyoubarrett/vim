@@ -78,6 +78,7 @@ class ShuffleLoop:
         self._sleep = sleep
         self.state = LoopState()
         self.apply_preset = apply_preset      # name -> log line; switches presets while running
+        self.max_poll: Optional[float] = None # check now-playing at least this often (the full-screen view)
         self._announced_idle = False
         self.background = background
         self._closed = False
@@ -679,6 +680,8 @@ class ShuffleLoop:
                     return
                 if self.state.planning is not None:
                     delay = min(delay, self.config.player.near_end_poll_interval)
+                if self.max_poll:
+                    delay = min(delay, self.max_poll)
                 self._wait(max(0.05, delay))
         finally:
             self.close()

@@ -104,6 +104,10 @@ ui:
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
   artwork: true             # the album cover in the header
+  backdrop: true            # the animated sky (aurora, stars) behind the panels
+  glass: 0.22               # how much of the sky shows through the panels (0 = none)
+  weather: true             # rain, a beam of light and water around the logo
+  track_poll: 0.5           # seconds between checks for a new song while the screen is up
   mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)
   fps: 12
 

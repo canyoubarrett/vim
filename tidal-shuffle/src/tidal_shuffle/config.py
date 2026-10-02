@@ -92,6 +92,10 @@ class UiConfig:
     logo_file: str = ""           # an .svg (traced into braille) or ---BIG--- / ---SMALL--- braille art
     cell_aspect: float = 0.5      # a terminal cell's width / height, so the logo keeps its proportions
     artwork: bool = True          # the album cover in the header (needs Pillow)
+    backdrop: bool = True         # the animated sky behind the panels
+    glass: float = 0.22           # how much of the sky shows through the panels (0 = none)
+    weather: bool = True          # rain, a light beam and water around the logo
+    track_poll: float = 0.5       # how often to check for a new song while the screen is up (s)
     mouse: bool = True            # click the key chips and presets (hold Option/Fn to select text)
     fps: float = 12.0
 
@@ -359,6 +363,10 @@ ui:
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
   artwork: true             # the album cover in the header
+  backdrop: true            # the animated sky (aurora, stars) behind the panels
+  glass: 0.22               # how much of the sky shows through the panels (0 = none)
+  weather: true             # rain, a beam of light and water around the logo
+  track_poll: 0.5           # seconds between checks for a new song while the screen is up
   mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)
   fps: 12
 
@@ -633,6 +641,10 @@ def _build(data: Mapping) -> AppConfig:
         "logo_file": lambda v, n: str(v or ""),
         "cell_aspect": lambda v, n: _as_number(v, n, float, 0.2, 1.25),
         "artwork": _as_bool,
+        "backdrop": _as_bool,
+        "glass": lambda v, n: _as_number(v, n, float, 0.0, 0.6),
+        "weather": _as_bool,
+        "track_poll": lambda v, n: _as_number(v, n, float, 0.2, 10),
         "mouse": _as_bool,
         "fps": lambda v, n: _as_number(v, n, float, 1, 30),
     })

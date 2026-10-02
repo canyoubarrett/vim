@@ -266,7 +266,12 @@ def test_full_screen_view_in_a_real_terminal(mac):
             chunks.append(data)
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
-    seen = lambda text: text.encode() in b"".join(chunks)
+    import re
+
+    ansi = re.compile(rb"\x1b\[[0-9;?<]*[A-Za-z]")
+    # the screen is drawn cell by cell over an animated sky, so text is
+    # interleaved with colour codes: look at what is visible
+    seen = lambda text: text.encode() in ansi.sub(b"", b"".join(chunks))
     try:
         assert wait_until(lambda: get(port, "/json/version"), 30), "tidal-shuffle did not start TIDAL"
         get(port, "/__play?id=101&how=user")

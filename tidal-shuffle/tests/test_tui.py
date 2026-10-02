@@ -78,7 +78,7 @@ def test_logo_art_and_dots():
 
 
 def test_logo_scene_fits_any_size_has_no_rain_and_drifts_slower_when_paused():
-    scene = LogoScene()
+    scene = LogoScene(weather=False)
     for w, h in ((20, 6), (50, 24), (160, 50)):
         g = scene.frame(w, h, 1.0)
         assert len(g) == h and all(len(r) == w for r in g)
@@ -127,7 +127,9 @@ def test_screen_layouts():
     out, svg = render(tui, 120, 40)
     assert "Midnight City" in out and "1:23" in out and "Strangers — Kosheen" in out and "next up" in out
     assert "Alter Era" in out and "Lyrics · TIDAL" in out and "Waiting in a car" in out   # side by side
-    assert "#1e1e2e" in svg.lower() and "#cba6f7" in svg.lower()                          # Catppuccin Mocha
+    assert "#cba6f7" in svg.lower() and "#11111b" in svg.lower()                          # Catppuccin Mocha
+    tui.backdrop = None
+    assert "#1e1e2e" in render(tui, 120, 40)[1].lower()                                   # plain base without the sky
     tui.toggle_view()
     out, _ = render(tui, 120, 40)
     assert "Alter Era · l for lyrics" in out and "Waiting in a car" not in out
@@ -155,8 +157,8 @@ def test_vector_logo_from_the_svg():
         dots = sum(1 for row in g for c in row if "⠀" < c[0] <= "⣿")
         assert len(g) == h and all(len(r) == w for r in g) and dots > 20
     # bigger panel, bigger logo
-    small = sum(1 for row in LogoScene().frame(40, 20, 3.0) for c in row if "⠀" < c[0] <= "⣿")
-    big = sum(1 for row in LogoScene().frame(120, 50, 3.0) for c in row if "⠀" < c[0] <= "⣿")
+    small = sum(1 for row in LogoScene(weather=False).frame(40, 20, 3.0) for c in row if "⠀" < c[0] <= "⣿")
+    big = sum(1 for row in LogoScene(weather=False).frame(120, 50, 3.0) for c in row if "⠀" < c[0] <= "⣿")
     assert big > small * 2
 
 
@@ -335,3 +337,168 @@ def test_preset_sections_put_your_own_presets_last():
     sections = preset_sections({"balanced": {}, "my-evening": {}, "warm-up": {}, "radio": {}})
     assert sections == [("Energy & sound", ["radio", "warm-up"]), ("How picks are chosen", ["balanced"]),
                         ("Your presets", ["my-evening"])]
+
+
+
+# -- transitions, karaoke, effects -----------------------------------------------------
+
+def stepping_tui(lyr):
+    """A TUI whose clock moves on 0.1 s with every frame."""
+    tui = make_tui(lyr)
+    clock = {"t": 1000.0}
+    tui._clock = lambda: clock["t"]
+
+    def frame(n=1, w=120, h=40):
+        out = None
+        for _ in range(n):
+            clock["t"] += 0.1
+            out = render(tui, w, h)[0]
+        return out
+    return tui, frame, clock
+
+
+def lyric_panel(tui, w=120, h=40):
+    return [r for r in tui.regions(w, h) if "Lyrics" in str(getattr(r[0], "title", ""))]
+
+
+def test_lyrics_go_the_moment_the_song_changes_and_the_logo_glides_back():
+    lyr = Lyrics(lines=parse_lrc("[01:20.00]Waiting in a car\n[01:30.00]Waiting for a ride"), synced=True, source="TIDAL")
+    tui, frame, clock = stepping_tui(lyr)
+    assert "Waiting in a car" in frame()
+    st = tui.loop.state
+    st.pending = NowPlaying("Strangers", "Kosheen", bundle_id=TIDAL_BUNDLE_ID)   # TIDAL shows another song
+    assert tui.wanted_lyrics() == (None, "changing")
+    frame(4)                                                  # 0.4 s
+    assert tui._content[0] < 0.05 and "Waiting in a car" not in frame()
+    assert tui._layout[0] > 0.9                               # the layout waits a moment for the next song's
+    widths = []
+    for _ in range(60):                                       # then the logo glides to the full width
+        frame()
+        widths.append([r for r in tui.regions(120, 40) if "Alter Era" in str(getattr(r[0], "title", ""))][0][3])
+    assert widths[-1] == 116 and widths[0] < 60
+    steps = [b - a for a, b in zip(widths, widths[1:])]
+    assert min(steps) >= 0 and max(steps) <= 12               # smooth, one way, no jumps
+    assert tui._shown is None and not lyric_panel(tui)
+    # the next song has lyrics: room is made first, then they fade in
+    st.pending = None
+    st.current = NowPlaying("Strangers", "Kosheen", duration=200.0, playing=True, bundle_id=TIDAL_BUNDLE_ID)
+    st.started_at = clock["t"] - 81.0
+    frame()
+    assert tui._layout_goal == 1.0 and tui._content[0] < 0.1
+    frame(30)
+    assert tui._layout[0] > 0.97 and tui._content[0] > 0.97 and "Waiting in a car" in frame()
+
+
+def test_lyrics_hide_during_a_hand_off_and_at_the_end_of_the_song():
+    lyr = Lyrics(lines=parse_lrc("[00:10.00]one"), synced=True, source="TIDAL")
+    tui = make_tui(lyr)
+    assert tui.wanted_lyrics()[0] is lyr
+    tui.loop.state.handed_off = True
+    assert tui.wanted_lyrics() == (None, "changing")
+    tui.loop.state.handed_off = False
+    tui.loop.state.started_at = 1000.0 - 243.9                # 0.1 s before the end
+    assert tui.wanted_lyrics() == (None, "changing")
+    tui.view = "logo"
+    assert tui.wanted_lyrics() == (None, "logo")
+
+
+def test_karaoke_sweep_lights_words_as_they_are_sung():
+    from tidal_shuffle.tui import sung_chars, sweep_cells
+
+    lyr = Lyrics(lines=parse_lrc("[00:10.00]one two three four\n[00:20.00]next"), synced=True)
+    assert sung_chars(lyr, 0, 9.75) == 0.0
+    mid = sung_chars(lyr, 0, 10.75)
+    assert 0 < mid < len("one two three four")
+    assert sung_chars(lyr, 0, 19.0) == len("one two three four")
+    cells = sweep_cells("one two three four", 0, "one two three four", 5.0, MOCHA)
+    lit = "".join(c[0] for c in cells if c[2]).strip()
+    assert lit == "one two" and all(c[3] == MOCHA.current_bg for c in cells)
+    assert cells[0][1] == MOCHA.current_fg and cells[-1][1] != MOCHA.current_fg
+    # word stamps (enhanced LRC) are followed exactly
+    stamped = Lyrics(lines=parse_lrc("[00:10.00]<00:10.00>slow <00:14.00>then <00:14.20>fast\n[00:16.00]x"), synced=True)
+    assert stamped.lines[0].words == [(10.0, 0), (14.0, 5), (14.2, 10)]
+    assert 0 < sung_chars(stamped, 0, 13.6) < 5 < sung_chars(stamped, 0, 13.8) < 10   # lead: 0.25 s early
+    grid = lyrics_grid(stamped, 13.8, 30.0, 40, 5, MOCHA)
+    row = [c for r in grid for c in r if len(c) > 3 and c[3] == MOCHA.current_bg and c[0].strip()]
+    assert "".join(c[0] for c in row if c[2]) == "slowthen" and "".join(c[0] for c in row if not c[2]) == "fast"
+
+
+def test_lyrics_grid_fades():
+    lyr = Lyrics(lines=parse_lrc(LRC), synced=True)
+    faded = lyrics_grid(lyr, 31.0, 200, 30, 5, MOCHA, alpha=0.3)
+    bar = [c for c in faded[2] if len(c) > 3 and c[3] is not None]
+    assert bar and all(c[3] != MOCHA.current_bg for c in bar)          # the bar fades with the text
+    assert lyrics_grid(lyr, 31.0, 200, 30, 5, MOCHA, alpha=1.0)[2] != faded[2]
+
+
+def test_spring_is_smooth_and_does_not_overshoot():
+    from tidal_shuffle.fx import spring
+
+    x, v, xs = 0.0, 0.0, []
+    for _ in range(60):
+        x, v = spring(x, v, 1.0, 1 / 12, 5.5)
+        xs.append(x)
+    steps = [b - a for a, b in zip([0.0] + xs, xs)]
+    assert max(xs) <= 1.0 and xs[-1] > 0.99 and min(steps) >= 0
+    assert steps[0] < steps[3]                                   # it eases in rather than jumping
+
+
+def test_compositor_glass_opacity_and_output():
+    from rich.segment import Segment
+
+    from tidal_shuffle.fx import Canvas, segments
+    from tidal_shuffle.tui import style as mkstyle
+
+    sky = (100, 40, 120)
+    cells = [[[" ", None, False, sky] for _ in range(6)] for _ in range(2)]
+    canvas = Canvas(cells, MOCHA.bg, MOCHA.text, glass=0.5)
+    canvas.blit([[Segment("ab", mkstyle((255, 0, 0), False, MOCHA.bg)), Segment("c", mkstyle((0, 255, 0), True, (1, 2, 3)))]],
+                0, 0, 6, 1)
+    a, c = cells[0][0], cells[0][2]
+    assert a[0] == "a" and a[1] == (255, 0, 0) and a[3] != MOCHA.bg and a[3] != sky   # glass: tinted by the sky
+    assert c[3] == (1, 2, 3) and c[2] is True                                         # solid colours stay
+    canvas.blit([[Segment("x", mkstyle((250, 250, 250), False, (0, 0, 0)))]], 0, 1, 6, 1, opacity=0.5)
+    x = cells[1][0]
+    assert x[0] == "x" and x[3] == (50, 20, 60) and x[1] != (250, 250, 250)            # half way there
+    canvas.blit([[Segment("y")]], 1, 1, 6, 1, opacity=0.0)
+    assert cells[1][1][0] == " "                                                       # invisible: not drawn
+    out = list(segments(cells, mkstyle))
+    assert "".join(s.text for s in out).splitlines()[0].startswith("abc")
+
+
+def test_backdrop_sky():
+    from tidal_shuffle.fx import Backdrop
+
+    sky = Backdrop(MOCHA.p)
+    rows = sky.frame(80, 30, 1.0, energy=0.2)
+    assert len(rows) == 30 and all(len(r) == 80 for r in rows)
+    assert len({tuple(c[3]) for r in rows for c in r}) > 50             # a gradient, with aurora
+    assert any(c[0] != " " for r in rows for c in r)                    # stars and bokeh
+    assert sky.colors(0.2) != sky.colors(0.9)                           # calm is cool, energetic warm
+    t = sky._t
+    sky.frame(80, 30, 2.0, playing=False)
+    assert 0 < sky._t - t < 0.5                                         # paused: slow motion
+
+
+def test_rainy_scene_with_beam_reflection_and_lightning():
+    scene = LogoScene()
+    for i in range(30):
+        g = scene.frame(80, 30, 3.0 + i * 0.08)
+    assert len(g) == 30 and all(len(r) == 80 and len(c) == 4 for r in g for c in r)
+    gy = int(30 * 0.72)
+    logo = MOCHA.logo
+    above = [c for r in g[:gy] for c in r if "⠀" < c[0] <= "⣿"]
+    below = [c for r in g[gy + 1:] for c in r if "⠀" < c[0] <= "⣿"]
+    assert len(above) > 100 and below                                    # rain and logo; reflection or rain below
+    assert any(c[0] in "()·" for r in g[gy:] for c in r)                 # rings where drops land
+    bgs = [c[3] for c in g[gy // 2]]
+    assert max(sum(b) for b in bgs) - min(sum(b) for b in bgs) > 20      # the beam lights a band of sky
+    flashes = [scene.lightning(t / 20)[0] for t in range(0, 20 * 120)]
+    assert max(flashes) > 0.6 and flashes.count(0.0) > len(flashes) * 0.8   # rare, bright
+    assert any(c[2] is False for r in g for c in r) and logo
+
+
+def test_scene_reflection_mirrors_the_logo():
+    from tidal_shuffle.visualizer import _FLIP
+
+    assert _FLIP[0x01] == 0x40 and _FLIP[0x08] == 0x80 and _FLIP[_FLIP[0x5A]] == 0x5A
