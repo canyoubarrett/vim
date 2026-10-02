@@ -27,12 +27,14 @@ class TidalPlayer:
     def __init__(self, config: PlayerConfig, cdp: Optional[TidalCdp] = None, luna: Optional[LunaApi] = None,
                  run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
                  sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic,
                  log: Optional[Callable[[str], None]] = None):
         self.config = config
         self.cdp = cdp
         self.luna = luna
         self._run = run
         self._sleep = sleep
+        self._clock = clock
         self.log = log or (lambda m: None)
         self._cdp_ok: Optional[bool] = None
         self._luna_ok: Optional[bool] = None
@@ -81,8 +83,10 @@ class TidalPlayer:
         strategy = self.config.play_strategy
         if strategy in ("auto", "luna") and self.luna is not None and self.luna.alive():
             self._luna_ok = True
-            if strategy == "luna":
-                return "luna-api"
+            if strategy == "luna" or self.cdp is None or not self.cdp.alive():
+                return "luna-api"  # never relaunch a TIDAL that already answers through TidaLuna
+            self._cdp_ok = True
+            return "luna-api"
         if strategy == "luna":
             raise RuntimeError("TidaLuna API plugin not reachable (is TIDAL running with TidaLuna and its API plugin?)")
         if strategy in ("auto", "cdp") and self.cdp is not None:
@@ -133,9 +137,9 @@ class TidalPlayer:
         return r.returncode == 0
 
     def _verify_luna(self, track: TidalTrack, method: str) -> PlayOutcome:
-        deadline = time.monotonic() + self.config.verify_seconds
+        deadline = self._clock() + self.config.verify_seconds
         observed = None
-        while time.monotonic() < deadline:
+        while self._clock() < deadline:
             try:
                 if method == "luna-api":
                     observed = self.luna.current_track_id()
@@ -184,9 +188,9 @@ class TidalPlayer:
             if out.ok:
                 return out
             self.log(f"CDP play failed for {track.label()}: {out.detail}")
-            if self.config.play_strategy == "cdp":
-                return out
-            # fall through to the deep link so the user at least lands on the song
+            # CDP is reachable but this track could not be started: let the caller try a
+            # backup instead of navigating TIDAL around with deep links.
+            return out
         url = track.deep_link + ("?play=true" if method == "open-url-play" or self.config.play_strategy == "open-url-play" else "")
         ok = self._open(url)
         return PlayOutcome(False, method, None,

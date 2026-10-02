@@ -76,7 +76,7 @@ on harvest(seedURI, stationURI, wanted, stepTimeout, adTimeout, muteIt, useStati
             else
                 play track seedURI
             end if
-        end with timeout
+        end timeout
     end tell
     delay 1.0
     tell application id "%(bid)s"

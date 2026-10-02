@@ -196,8 +196,7 @@ def test(**kwargs):
     if np is None or not np.is_tidal:
         raise click.ClickException("TIDAL is not playing anything right now")
     loop.step(dry_run=True)
-    loop.state.started_at -= cfg.player.plan_after_seconds + 1
-    plan = loop.plan_now(dry_run=True)
+    plan = loop.state.plan or loop.plan_now(dry_run=True)
     rt.close()
     if plan is None or not plan.picks:
         raise click.ClickException("no pick could be made")
