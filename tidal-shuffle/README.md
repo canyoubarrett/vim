@@ -84,6 +84,11 @@ that much earlier, plus a second of margin; never less than
 `~/.config/tidal-shuffle/timing.json`. If TIDAL still gets to its own next
 song first, the first hand-off of a run may be late; the next ones are not.
 
+Diagrams of how the shuffle works (PDF): [the loop](docs/shuffle-loop.pdf),
+[from 30 radio songs to one pick](docs/shuffle-funnel.pdf),
+[shuffle modes](docs/shuffle-modes.pdf), [hand-off timing](docs/shuffle-timing.pdf),
+or [all four](docs/tidal-shuffle-how-it-works.pdf).
+
 ## How the Spotify engine works
 
 1. **Find the TIDAL song on Spotify.** AppleScript can play a Spotify song
