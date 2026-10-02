@@ -27,14 +27,25 @@ main source if you prefer.
 
 ## Install
 
+You need [Homebrew](https://brew.sh). Then, in Terminal:
+
 ```bash
-cd tidal-shuffle
-pip install -e .            # or: pipx install ./tidal-shuffle
-brew install media-control
+git clone -b claude/blissful-pasteur-dw57cr https://github.com/canyoubarrett/vim.git ~/tidal-shuffle-src
+cd ~/tidal-shuffle-src/tidal-shuffle
+./install.sh
 tidal-shuffle login         # TIDAL device-link login: approve the URL it prints
-tidal-shuffle config init   # optional: writes ~/.config/tidal-shuffle/config.yaml
 tidal-shuffle doctor        # checks every moving part and says how to fix it
 ```
+
+`install.sh` makes a private Python environment in `.venv` (installing
+Python 3.12 with Homebrew if yours is older than 3.10, as the one built
+into macOS is), installs `media-control`, and links the `tidal-shuffle`
+command into Homebrew's `bin`. Run it again after pulling updates. macOS
+has no `pip` command, so use the installer, or a venv and
+`python3 -m pip install -e .` if you prefer to do it by hand.
+
+`tidal-shuffle config init` writes an optional config file to
+`~/.config/tidal-shuffle/config.yaml`.
 
 ### macOS permissions
 
@@ -219,7 +230,7 @@ Commands that read settings take `--config PATH`; `TIDAL_SHUFFLE_CONFIG` sets th
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+python3 -m pip install -e ".[dev]"   # inside .venv
 pytest                                    # unit tests, any platform
 cd tests/e2e/fake_tidal && npm install    # once, for the end-to-end tests
 pytest tests/e2e                          # about a minute
