@@ -134,7 +134,9 @@ class ShuffleLoop:
             if st.anchor is None or st.current is None:
                 st.anchor = Seed.from_now_playing(np)
             # Songs you (or TIDAL) chose count as heard, so they are not picked again soon.
-            self.history.add(np.title, np.artist, tidal_id=np.tidal_id, source="tidal")
+            last = self.history.recent(1)
+            if not last or last[0].key != np.key:
+                self.history.add(np.title, np.artist, tidal_id=np.tidal_id, source="tidal")
         st.tracks_seen += 1
         st.generation += 1
         st.planning = None  # a plan still running for the previous song is ignored when it lands

@@ -58,6 +58,8 @@ def _is_recent(c: Candidate, ctx: PickContext) -> bool:
 def _in_cooldown(c: Candidate, ctx: PickContext) -> bool:
     if ctx.artist_cooldown <= 0:
         return False
+    if ctx.allow_seed_artist and _is_seed_artist(c, ctx):
+        return False  # you asked for more from the artist playing now
     window = [_artist_key(a) for a in ctx.recent_artists[-ctx.artist_cooldown:]]
     return _artist_key(c.artist) in window
 

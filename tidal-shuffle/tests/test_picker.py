@@ -82,3 +82,9 @@ def test_random_is_a_permutation_and_dedupes():
 def test_unknown_strategy_raises():
     with pytest.raises(ValueError):
         order_candidates(cands(), PickContext(), "bogus")
+
+
+def test_allow_seed_artist_wins_over_the_cooldown():
+    ctx = PickContext(seed_artist="Artist 1", allow_seed_artist=True, recent_artists=["Artist 1"], artist_cooldown=3)
+    ordered, note = order_candidates(cands(), ctx, "top")
+    assert ordered[0].artist == "Artist 1" and note == ""
