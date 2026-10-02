@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tidal-shuffle"
-version = "0.6.0"
+version = "0.6.1"
 description = "A smarter shuffle for the TIDAL macOS app: picks the next song from Spotify, Last.fm or TIDAL radio and plays it in TIDAL automatically."
 readme = "README.md"
 requires-python = ">=3.10"

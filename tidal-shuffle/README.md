@@ -97,10 +97,11 @@ simply follows your choice.
   panel allows, so it stays crisp; if it looks too wide or narrow in your
   font, adjust `ui.cell_aspect` (a cell's width / height, 0.5 by default);
 * on the right, the **lyrics**, scrolling with the song, the line being
-  sung shown inverted on a solid bar (TIDAL's own synced lyrics first, then
+  sung in bright bold text (TIDAL's own synced lyrics first, then
   [LRCLIB](https://lrclib.net), free and keyless, which is searched again
   with a plainer title and the main artist when only plain lyrics turned
-  up). The words of the line being sung light up (bold) as they are sung,
+  up). As each word is sung it turns inverted (dark text on the accent
+  colour), so the inversion sweeps along the line in time with the song,
   following the word timing when the lyrics have it (enhanced LRC) and the
   singing pace otherwise. Lyrics without timing get estimated timing: the lines are spread over
   the song after a short intro, longer lines getting more time and verse

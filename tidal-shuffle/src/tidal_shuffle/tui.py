@@ -174,17 +174,33 @@ def _word_starts(text: str) -> list[int]:
 
 
 def sweep_cells(part: str, offset: int, line_text: str, sung: float, th: Theme) -> list:
-    """The cells of (part of) the line being sung: words already reached are
-    bold and bright, the rest of the line waits, dimmer, on the same bar."""
+    """The cells of (part of) the line being sung: the words already reached
+    are inverted (dark text on the accent colour), the rest of the line waits
+    in bright text, so the inversion sweeps along the line in time."""
     starts = _word_starts(line_text)
-    lit_fg = th.current_fg
-    wait_fg = lerp(th.current_bg, th.current_fg, 0.42)
     cells = []
     for k, ch in enumerate(part):
         o = offset + k
         lit = o < len(starts) and starts[o] <= sung
-        cells.append((ch, lit_fg if lit else wait_fg, lit, th.current_bg))
+        cells.append((ch, th.current_fg, True, th.current_bg) if lit else (ch, th.text, True, None))
     return cells
+
+
+def paint_current(row: list, start: int, cells: list, th: Theme) -> None:
+    """Lay the line being sung into ``row`` at ``start``, with one inverted
+    cell of padding either side of the sung part."""
+    width = len(row)
+    for k, cell in enumerate(cells):
+        if 0 <= start + k < width:
+            row[start + k] = cell
+    lit = [k for k, c in enumerate(cells) if len(c) > 3 and c[3] is not None]
+    if not lit:
+        return
+    pad = (" ", th.current_fg, True, th.current_bg)
+    if lit[0] == 0 and start - 1 >= 0:
+        row[start - 1] = pad
+    if lit[-1] == len(cells) - 1 and start + len(cells) < width:
+        row[start + len(cells)] = pad
 
 
 def lyric_rows(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int,
@@ -291,7 +307,6 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
     grid = [[(" ", None)] * width for _ in range(height)]
 
     def paint(column: list, x0: int, w: int, top: int) -> None:
-        block = max((len(t) for t, i, _ in column if i == current), default=0)
         for r, (text, i, off) in enumerate(column):
             y = top + r
             if y >= height:
@@ -299,11 +314,7 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
             start = x0 + max(0, (w - len(text)) // 2)
             row = grid[y]
             if i == current and current >= 0:
-                lo = x0 + max(0, (w - block) // 2 - 2)
-                for c in range(lo, min(x0 + w, lo + block + 4)):
-                    row[c] = (" ", th.current_fg, True, th.current_bg)
-                for k, cell in enumerate(sweep_cells(text, off, lyrics.lines[i].text.strip(), sung, th)):
-                    row[start + k] = cell
+                paint_current(row, start, sweep_cells(text, off, lyrics.lines[i].text.strip(), sung, th), th)
             else:
                 kind = "plain" if current < 0 else (f"past:{current - i}" if i < current else f"next:{i - current}")
                 color = _line_color(kind, th)
@@ -339,8 +350,8 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
 
 def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int, height: int,
                 th: Theme, alpha: float = 1.0) -> list:
-    """Lyric rows centred in the panel; the line being sung on a bar, its words
-    lighting up as they are sung. Lyrics without real timing are shown whole,
+    """Lyric rows centred in the panel; the words of the line being sung turn
+    inverted as they are sung. Lyrics without real timing are shown whole,
     in two columns, when they fit. ``alpha`` fades the whole thing."""
     if lyrics.estimated or not lyrics.synced:
         whole = two_column_grid(lyrics, position, width, height, th)
@@ -350,10 +361,6 @@ def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[fl
     rows = lyric_rows(lyrics, position, duration, width, height)
     current = lyrics.index_at(position or 0.0) if lyrics.synced else -1
     sung = sung_chars(lyrics, current, position or 0.0) if current >= 0 else 0.0
-    # a wrapped current line gets one even bar, as wide as its longest row
-    block = max((len(t[:max(1, width - 2)]) for t, k, _ in rows if k == "current"), default=0)
-    block_lo = max(0, (width - block) // 2 - 2)
-    block_hi = min(width, block_lo + block + 4)
     for r, (text, kind, off) in enumerate(rows):
         if r >= height or (not text and kind != "current"):
             continue
@@ -361,11 +368,8 @@ def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[fl
         start = max(0, (width - len(text)) // 2)
         row = list(grid[r])
         if kind == "current":
-            for c in range(block_lo, block_hi):
-                row[c] = (" ", th.current_fg, True, th.current_bg)
             line_text = lyrics.lines[current].text.strip() if current >= 0 else text
-            for i, cell in enumerate(sweep_cells(text, off, line_text, sung, th)):
-                row[start + i] = cell
+            paint_current(row, start, sweep_cells(text, off, line_text, sung, th), th)
         else:
             color = _line_color(kind, th)
             for i, ch in enumerate(text):

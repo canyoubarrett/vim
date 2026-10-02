@@ -32,7 +32,7 @@ def test_current_line_is_inverted():
     text = "".join(c[0] for c in current)
     assert "three" in text
     lit = [c for c in current if len(c) > 3 and c[3] == MOCHA.current_bg]
-    assert len(lit) == len("three") + 4                   # the word plus two cells each side
+    assert len(lit) == len("three") + 2                   # the sung word plus a cell each side
     assert all(c[1] == MOCHA.current_fg and c[2] for c in lit)   # dark, bold text on the bar
     assert all(len(c) < 4 or c[3] is None for c in grid[1])      # other lines are not
 
@@ -411,16 +411,22 @@ def test_karaoke_sweep_lights_words_as_they_are_sung():
     assert 0 < mid < len("one two three four")
     assert sung_chars(lyr, 0, 19.0) == len("one two three four")
     cells = sweep_cells("one two three four", 0, "one two three four", 5.0, MOCHA)
-    lit = "".join(c[0] for c in cells if c[2]).strip()
-    assert lit == "one two" and all(c[3] == MOCHA.current_bg for c in cells)
-    assert cells[0][1] == MOCHA.current_fg and cells[-1][1] != MOCHA.current_fg
+    inverted = "".join(c[0] for c in cells if c[3] == MOCHA.current_bg)
+    waiting = "".join(c[0] for c in cells if c[3] is None)
+    assert inverted == "one two" and waiting == " three four"           # the inversion sweeps along
+    assert cells[0][1] == MOCHA.current_fg and cells[-1][1] == MOCHA.text and all(c[2] for c in cells)
     # word stamps (enhanced LRC) are followed exactly
     stamped = Lyrics(lines=parse_lrc("[00:10.00]<00:10.00>slow <00:14.00>then <00:14.20>fast\n[00:16.00]x"), synced=True)
     assert stamped.lines[0].words == [(10.0, 0), (14.0, 5), (14.2, 10)]
     assert 0 < sung_chars(stamped, 0, 13.6) < 5 < sung_chars(stamped, 0, 13.8) < 10   # lead: 0.25 s early
     grid = lyrics_grid(stamped, 13.8, 30.0, 40, 5, MOCHA)
-    row = [c for r in grid for c in r if len(c) > 3 and c[3] == MOCHA.current_bg and c[0].strip()]
-    assert "".join(c[0] for c in row if c[2]) == "slowthen" and "".join(c[0] for c in row if not c[2]) == "fast"
+    line = next(r for r in grid if "fast" in "".join(c[0] for c in r))
+    assert "".join(c[0] for c in line if len(c) > 3 and c[3] == MOCHA.current_bg).strip() == "slow then"
+    assert "fast" in "".join(c[0] for c in line if len(c) < 4 or c[3] is None)
+    # as the line goes on, more of it is inverted, until all of it is
+    full = lyrics_grid(stamped, 15.0, 30.0, 40, 5, MOCHA)
+    line = next(r for r in full if "fast" in "".join(c[0] for c in r))
+    assert "".join(c[0] for c in line if len(c) > 3 and c[3] == MOCHA.current_bg).strip() == "slow then fast"
 
 
 def test_lyrics_grid_fades():
