@@ -33,7 +33,20 @@ def revision() -> Optional[str]:
     return _git("log", "-1", "--format=%h %cs") if git_root() else None
 
 
+def version_on_disk() -> str:
+    """The version in the source folder's pyproject.toml, which can be newer than
+    the running code's ``__version__`` (right after `tidal-shuffle update`)."""
+    import re
+
+    try:
+        text = (PROJECT_DIR / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return __version__
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+    return m.group(1) if m else __version__
+
+
 def describe() -> str:
     rev = revision()
     where = PROJECT_DIR if (PROJECT_DIR / "pyproject.toml").exists() else PACKAGE_DIR
-    return f"tidal-shuffle {__version__}" + (f" ({rev})" if rev else "") + f" from {where}"
+    return f"tidal-shuffle {version_on_disk()}" + (f" ({rev})" if rev else "") + f" from {where}"
