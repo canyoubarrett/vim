@@ -111,6 +111,7 @@ tune the rest.
 | `space` (or ⏯) | pause / play TIDAL |
 | `n` (or ⏭) | skip to a fresh pick (chosen in the background if none is ready; the other keys keep working) |
 | `b` (or ⏮) | TIDAL's previous track |
+| `f` | next shuffle flow (radio → rising → falling → steady → soundscape → vibe) |
 | `l` | logo alone / logo and lyrics |
 | `q` | stop Tidal Shuffle |
 | `?` | list the keys |
@@ -236,6 +237,39 @@ after the song ends, Tidal Shuffle starts it itself.
 Sources are tried in the order listed under `sources:`. The first one that
 returns songs wins; `shuffle.blend: true` merges them all.
 `tidal-shuffle sources --seed "Song - Artist"` shows what each one suggests.
+
+## Shuffle flows: how each song follows the last
+
+The song radio decides which songs are candidates; the **flow** decides which
+of them suits the moment, from each song's audio features (energy, mood,
+danceability, acousticness, instrumentalness, tempo):
+
+| flow | preset | what it does |
+|------|--------|--------------|
+| `radio` | `radio` | the song radio as it is (the default) |
+| `rising` | `warm-up` | each song a little more energetic than the last |
+| `falling` | `wind-down` | each song a little calmer than the last |
+| `steady` | `steady`, `chill` | one energy level: the first song's, or `--energy 0.7` |
+| `soundscape` | `soundscape` | stays close to the *first* song's overall sound (acoustic or electronic, instrumental, tempo, mood) without drifting |
+| `vibe` | `vibe` | stays close to the *current* song's mood and energy |
+
+```bash
+tidal-shuffle run --flow rising              # or --preset warm-up
+tidal-shuffle run --flow steady --energy 0.4
+tidal-shuffle run --preset soundscape
+```
+
+Press `f` while running to switch flows; the next pick is chosen again
+straight away, and the header shows the flow and its target energy
+(`rising → energy 0.62`) and each pick's energy.
+`shuffle.energy_step` (0.06) sets how fast `rising` and `falling` move.
+
+Spotify no longer gives audio features to new apps, so they come from
+[ReccoBeats](https://reccobeats.com) (free, no key), looked up by the
+Spotify ids the radio harvest already has, and cached for half a year.
+Songs without features are still possible but rarely picked; when none of
+the candidates has any, or ReccoBeats cannot be reached, the flow steps
+aside and the plain song radio is used (the log says so).
 
 ## Choosing how it shuffles
 

@@ -16,6 +16,7 @@ from .paths import CONFIG_DIR, CONFIG_FILE, TIDAL_SESSION_FILE
 KNOWN_SOURCES = ("spotify-app", "spotify-api", "lastfm", "deezer", "tidal-radio")
 DEFAULT_SOURCES = ["spotify-app", "spotify-api", "lastfm", "deezer", "tidal-radio"]
 STRATEGIES = ("top", "weighted", "random", "discovery")
+FLOWS = ("radio", "rising", "falling", "steady", "soundscape", "vibe")
 SEED_MODES = ("current", "anchor", "window")
 NOWPLAYING_BACKENDS = ("auto", "media-control", "nowplaying-cli")
 PLAY_STRATEGIES = ("auto", "luna", "cdp", "open-url", "open-url-play")
@@ -104,6 +105,9 @@ class TidalConfig:
 @dataclass
 class ShuffleConfig:
     strategy: str = "weighted"
+    flow: str = "radio"               # radio | rising | falling | steady | soundscape | vibe (see flows.py)
+    energy: Optional[float] = None    # steady flow: hold this energy (0-1) instead of the first song's
+    energy_step: float = 0.06         # rising / falling: how much energy changes per song
     blend: bool = False
     candidates: int = 30
     avoid_repeats_for: int = 200
@@ -215,8 +219,33 @@ DEFAULT_PRESETS: dict[str, dict] = {
         "spotify": {"vibe": {"energy": 0.9, "valence": 0.7, "min_popularity": 30, "genres": ["edm", "hip-hop", "pop"]}},
     },
     "chill": {
-        "description": "Low-key background music (Spotify API tuning).",
+        "description": "Low-key background music: holds a calm energy level.",
+        "shuffle": {"flow": "steady", "energy": 0.3},
         "spotify": {"vibe": {"energy": 0.3, "valence": 0.5, "acousticness": 0.7, "genres": ["acoustic", "indie-folk", "lo-fi"]}},
+    },
+    "radio": {
+        "description": "The song radio as it comes, closest songs first.",
+        "shuffle": {"flow": "radio", "strategy": "top"},
+    },
+    "warm-up": {
+        "description": "Energy rises a little with every song.",
+        "shuffle": {"flow": "rising", "strategy": "weighted"},
+    },
+    "wind-down": {
+        "description": "Energy falls a little with every song (evenings, falling asleep).",
+        "shuffle": {"flow": "falling", "strategy": "weighted"},
+    },
+    "steady": {
+        "description": "One energy level, the first song's, all session.",
+        "shuffle": {"flow": "steady", "strategy": "weighted"},
+    },
+    "soundscape": {
+        "description": "Stay in the first song's soundscape: its energy, mood, texture and tempo.",
+        "shuffle": {"flow": "soundscape", "strategy": "weighted"},
+    },
+    "vibe": {
+        "description": "Songs with the same mood and energy as the one playing.",
+        "shuffle": {"flow": "vibe", "strategy": "weighted"},
     },
 }
 
@@ -242,6 +271,13 @@ sources:
 
 shuffle:
   strategy: weighted        # top | weighted | random | discovery
+  flow: radio               # radio | rising | falling | steady | soundscape | vibe
+                            #   radio: the song radio as it is; rising / falling: each song a
+                            #   little more energetic / calmer; steady: one energy level;
+                            #   soundscape: the first song's overall sound; vibe: the current
+                            #   song's mood and energy. Press f while running to switch.
+  energy: null              # steady flow: hold this energy (0-1); null = the first song's
+  energy_step: 0.06         # rising / falling: energy change per song
   blend: false              # merge candidates from every available source
   candidates: 30            # candidates to request from each source
   avoid_repeats_for: 200    # never replay a song picked in the last N picks ...
@@ -519,6 +555,9 @@ def _build(data: Mapping) -> AppConfig:
 
     _fill(cfg.shuffle, data.get("shuffle") or {}, "shuffle", {
         "strategy": lambda v, n: _as_choice(v, n, STRATEGIES),
+        "flow": lambda v, n: _as_choice(v, n, FLOWS),
+        "energy": lambda v, n: None if v is None else _as_number(v, n, float, 0, 1),
+        "energy_step": lambda v, n: _as_number(v, n, float, 0.01, 0.3),
         "blend": _as_bool,
         "candidates": lambda v, n: int(_as_number(v, n, int, 1, 500)),
         "avoid_repeats_for": lambda v, n: int(_as_number(v, n, int, 0, 100000)),

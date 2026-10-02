@@ -40,7 +40,7 @@ from .lyrics import Lyrics, LyricsService
 from .theme import Theme, theme as make_theme
 from .visualizer import LogoScene, lerp
 
-KEYS_LINE = "space play/pause · n next pick · b back · l lyrics · q quit"
+KEYS_LINE = "space play/pause · n next pick · f flow · l lyrics · q quit"
 
 _STYLES: dict = {}
 
@@ -347,11 +347,17 @@ class ShuffleTUI:
         elif nxt is not None:
             lines.append(nxt.track.label(), style(th.text))
             lines.append(f"  · {nxt.source}", style(th.subtle))
+            energy = nxt.candidate.extra.get("energy") if nxt.candidate.extra else None
+            if energy is not None:
+                lines.append(f"  · energy {energy:.2f}", style(th.subtle))
         elif st.planning is not None or (cur is not None and st.plan is None):
             lines.append("choosing…", style(th.subtle))
         else:
             lines.append("—", style(th.subtle))
-        subtitle = f"{self.config.shuffle.strategy} · {st.picks_played} picks"
+        flow = self.config.shuffle.flow
+        target = st.plan.flow_target if st.plan is not None and getattr(st.plan, "flow_target", None) is not None else None
+        subtitle = (f"{flow}" + (f" → energy {target:.2f}" if target is not None and flow != "radio" else "")
+                    + f" · {self.config.shuffle.strategy} · {st.picks_played} picks")
         return self._panel(lines, "Tidal Shuffle", subtitle=subtitle)
 
     def logo_panel(self, caption: str) -> Panel:

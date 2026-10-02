@@ -155,7 +155,11 @@ def build_runtime(cfg: AppConfig, logger: Optional[Logger] = None, printer: Logg
     sources = build_sources(cfg, catalog, logger)
     if catalog is None:
         raise TidalLoginRequired("TIDAL login required; run `tidal-shuffle login`")
-    engine = Engine(cfg, sources, catalog, history, log=logger)
+    from . import paths
+    from .features import ReccoBeats
+
+    features = ReccoBeats(cache_path=paths.CONFIG_DIR / "cache" / "audio_features.json", log=logger)
+    engine = Engine(cfg, sources, catalog, history, log=logger, features=features)
     cdp = TidalCdp(port=cfg.player.cdp_port, app_path=cfg.player.tidal_app, log=logger) if is_macos() else None
     luna = LunaApi(port=cfg.player.luna_port) if is_macos() else None
     player = TidalPlayer(cfg.player, cdp=cdp, luna=luna, log=logger)

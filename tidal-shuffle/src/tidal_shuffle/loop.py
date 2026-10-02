@@ -550,11 +550,30 @@ class ShuffleLoop:
             self.log(f"keys: {KEY_HELP}")
         elif command == "playpause":
             self.toggle_pause()
+        elif command == "flow":
+            self.next_flow()
         elif command == "next":
             self.request_skip(dry_run=dry_run)
         elif command == "previous":
             if not self.player.press("previous"):
                 self.log("⏮ could not go back (TIDAL is not reachable over its debug port)")
+
+    def next_flow(self) -> str:
+        """Switch to the next shuffle flow; the next pick is chosen again with it."""
+        from .flows import FLOW_HELP, FLOWS
+
+        shuffle = self.config.shuffle
+        shuffle.flow = FLOWS[(FLOWS.index(shuffle.flow) + 1) % len(FLOWS)] if shuffle.flow in FLOWS else FLOWS[0]
+        self.log(f"flow: {shuffle.flow} — {FLOW_HELP[shuffle.flow]}")
+        st = self.state
+        if not st.handed_off and st.queued is None:
+            st.plan = None            # choose the next song again, the new way
+            st.prepared_id = None
+            st.generation += 1        # a plan still being made the old way is dropped
+            st.planning = None
+            if st.current is not None:
+                self.request_plan()
+        return shuffle.flow
 
     def request_skip(self, dry_run: bool = False) -> None:
         """Skip to a fresh pick without ever blocking the keys: play the pick that

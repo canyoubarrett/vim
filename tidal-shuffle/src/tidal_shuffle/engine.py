@@ -36,6 +36,8 @@ class Plan:
     candidates_considered: int = 0
     notes: list[str] = field(default_factory=list)
     elapsed: float = 0.0
+    flow: str = "radio"
+    flow_target: Optional[float] = None     # target energy, when the flow has one
 
     @property
     def primary(self) -> Optional[Pick]:
@@ -55,6 +57,7 @@ class Engine:
         history: HistoryStore,
         rng: Optional[random.Random] = None,
         log: Optional[Logger] = None,
+        features=None,
     ):
         self.config = config
         self.sources = list(sources)
@@ -63,6 +66,9 @@ class Engine:
         self.rng = rng or random.Random()
         self.log = log or (lambda msg: None)
         self._unavailable_reported: set[str] = set()
+        self.features = features                 # audio features for the flows (features.ReccoBeats)
+        self._song_features: dict = {}           # seed key -> Features (the first song's, for steady/soundscape)
+        self._last_target: Optional[float] = None
 
     # ------------------------------------------------------------------
     def cancel(self) -> None:
@@ -127,6 +133,42 @@ class Engine:
                 continue
             out.append(c)
         return out
+
+    def _flow_fits(self, pool: list[Candidate], current: Seed, anchor: Optional[Seed], plan: Plan) -> dict:
+        """How well each candidate suits the shuffle flow (empty: plain radio order)."""
+        from .flows import score
+
+        shuffle = self.config.shuffle
+        plan.flow = shuffle.flow
+        if shuffle.flow == "radio" or self.features is None or not pool:
+            return {}
+        ids = [c.spotify_id for c in pool if c.spotify_id]
+        if current.spotify_id:
+            ids.append(current.spotify_id)
+        try:
+            feats = self.features.features(ids)
+        except Exception as e:   # never let a flow break planning
+            self.log(f"audio features failed: {e}")
+            feats = {}
+        seed_f = feats.get(current.spotify_id) if current.spotify_id else None
+        if seed_f is not None:
+            self._song_features[current.key] = seed_f
+            if len(self._song_features) > 500:
+                self._song_features.pop(next(iter(self._song_features)))
+        seed_f = seed_f or self._song_features.get(current.key)
+        anchor_f = self._song_features.get(anchor.key) if anchor is not None else None
+        for c in pool:
+            f = feats.get(c.spotify_id) if c.spotify_id else None
+            if f is not None:
+                c.extra["energy"] = round(f.energy, 2)
+        res = score(shuffle.flow, {c.key: (feats.get(c.spotify_id) if c.spotify_id else None) for c in pool},
+                    seed_f, anchor_f, level=shuffle.energy, step=shuffle.energy_step, last_target=self._last_target)
+        if res.target is not None:
+            self._last_target = res.target
+        plan.flow_target = res.target
+        if res.note:
+            plan.notes.append(res.note)
+        return res.fits
 
     def _context(self, seed: Seed) -> PickContext:
         shuffle = self.config.shuffle
@@ -202,12 +244,16 @@ class Engine:
         avoid = [current] + [s for s in seeds if s is not current] + list(recent)[-3:]
         ctx = self._context(current)
         raw = self._gather(seeds, plan)
-        self._choose(self._clean(raw, avoid, exclude_keys), ctx, plan)
+        pool = self._clean(raw, avoid, exclude_keys)
+        ctx.fit = self._flow_fits(pool, current, anchor, plan)
+        self._choose(pool, ctx, plan)
         if not plan.picks and any(src.name not in plan.sources_tried for src in self.sources):
             # e.g. the Spotify radio was all the same artist or all heard recently
             more = self._gather(seeds, plan, everything=True)
             if more:
                 plan.notes.append("trying the other sources too")
-                self._choose(self._clean(raw + more, avoid, exclude_keys), ctx, plan)
+                pool = self._clean(raw + more, avoid, exclude_keys)
+                ctx.fit = self._flow_fits(pool, current, anchor, plan)
+                self._choose(pool, ctx, plan)
         plan.elapsed = time.monotonic() - started
         return plan

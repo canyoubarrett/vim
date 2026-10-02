@@ -59,12 +59,14 @@ def common_options(fn):
     @click.option("--preset", "-p", help="Named preset (see `tidal-shuffle presets`)")
     @click.option("--source", "-s", "sources", help="Comma separated sources, in priority order")
     @click.option("--strategy", type=click.Choice(["top", "weighted", "random", "discovery"]), help="Pick strategy")
+    @click.option("--flow", type=click.Choice(["radio", "rising", "falling", "steady", "soundscape", "vibe"]),
+                  help="How each song follows the last: radio, rising / falling energy, steady energy, soundscape, vibe")
     @click.option("--blend/--no-blend", default=None, help="Merge candidates from every source")
     @click.option("--artist-cooldown", type=int, help="Do not repeat an artist within N picks")
     @click.option("--allow-seed-artist/--no-seed-artist", default=None, help="May the next song be by the current artist?")
     @click.option("--seed-mode", type=click.Choice(["current", "anchor", "window"]), help="What the recommendations are seeded from")
     @click.option("--handoff", type=float, help="Seconds before the end to start the next song")
-    @click.option("--energy", type=float, help="Spotify API tuning 0-1")
+    @click.option("--energy", type=float, help="Energy 0-1: the steady flow's level (and Spotify API tuning)")
     @click.option("--mood", type=float, help="Spotify API tuning 0-1 (valence)")
     @click.option("--genres", help="Spotify API genre seeds, comma separated")
     @click.option("--verbose", "-v", is_flag=True, help="Show what every source and lookup is doing")
@@ -83,7 +85,7 @@ def _config_from(kwargs: dict) -> AppConfig:
     vibe: dict = {}
     if kwargs.get("sources"):
         overrides["sources"] = kwargs["sources"]
-    for key, name in (("strategy", "strategy"), ("blend", "blend"), ("artist_cooldown", "artist_cooldown"),
+    for key, name in (("strategy", "strategy"), ("flow", "flow"), ("blend", "blend"), ("artist_cooldown", "artist_cooldown"),
                       ("allow_seed_artist", "allow_seed_artist"), ("seed_mode", "seed")):
         if kwargs.get(key) is not None:
             shuffle[name] = kwargs[key]
@@ -91,6 +93,7 @@ def _config_from(kwargs: dict) -> AppConfig:
         player["handoff_seconds"] = kwargs["handoff"]
     if kwargs.get("energy") is not None:
         vibe["energy"] = kwargs["energy"]
+        shuffle["energy"] = kwargs["energy"]      # the steady flow's level too
     if kwargs.get("mood") is not None:
         vibe["valence"] = kwargs["mood"]
     if kwargs.get("genres"):

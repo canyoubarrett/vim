@@ -18,6 +18,13 @@ sources:
 
 shuffle:
   strategy: weighted        # top | weighted | random | discovery
+  flow: radio               # radio | rising | falling | steady | soundscape | vibe
+                            #   radio: the song radio as it is; rising / falling: each song a
+                            #   little more energetic / calmer; steady: one energy level;
+                            #   soundscape: the first song's overall sound; vibe: the current
+                            #   song's mood and energy. Press f while running to switch.
+  energy: null              # steady flow: hold this energy (0-1); null = the first song's
+  energy_step: 0.06         # rising / falling: energy change per song
   blend: false              # merge candidates from every available source
   candidates: 30            # candidates to request from each source
   avoid_repeats_for: 200    # never replay a song picked in the last N picks ...

@@ -32,6 +32,7 @@ class PickContext:
     max_duration: Optional[float] = 900.0
     allow_explicit: bool = True
     is_explicit: Optional[Callable[[Candidate], bool]] = None
+    fit: dict = field(default_factory=dict)   # candidate key -> how well it suits the flow (0..1)
 
 
 
@@ -152,6 +153,20 @@ def order_candidates(
     if not cands:
         return [], note
 
+    fit = ctx.fit
+    if fit:
+        # A flow is on: how well a song suits it counts more than its radio rank.
+        f = lambda c: max(0.001, fit.get(c.key, 1.0))
+        if strategy == "top":
+            ordered = sorted(cands, key=lambda c: (-(f(c) ** 2 * _relevance(c) ** 0.5), c.rank))
+        elif strategy == "random":
+            ordered = _weighted_order(cands, [f(c) ** 2 for c in cands], rng)   # random among those that suit the flow
+        elif strategy == "weighted":
+            ordered = _weighted_order(cands, [f(c) ** 4 * _relevance(c) for c in cands], rng)
+        else:  # discovery
+            n = max(1, len(cands))
+            ordered = _weighted_order(cands, [f(c) ** 3 * (0.3 + (c.rank + 1) / n) for c in cands], rng)
+        return ordered, note
     if strategy == "top":
         ordered = sorted(cands, key=lambda c: (-_relevance(c), c.rank))
     elif strategy == "random":
