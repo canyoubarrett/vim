@@ -862,7 +862,7 @@ class ShuffleTUI:
             pos, duration = self._shown_pos
             alpha = max(0.0, min(1.0, self._content[0]))
             out.append((self.lyrics_panel(self._shown, pos, duration, alpha), lyr_x, y, lyr_w, height,
-                        smoothstep((L - 0.3) / 0.7)))
+                        smoothstep(L / 0.55)))           # the empty glass box comes with the glide
         m = max(0.0, min(1.0, self._menu[0]))
         if self.menu_open or m > 0.01:
             out.append((self.presets_panel(height, y), x, y, width, height, m if not self.menu_open else max(m, 0.02)))

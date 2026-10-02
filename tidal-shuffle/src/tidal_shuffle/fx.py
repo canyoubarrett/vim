@@ -96,7 +96,7 @@ class Backdrop:
         top, bottom = (p["crust"], p["base"]) if not self.light else (p["base"], p["mantle"])
         speed = 0.55 + 0.9 * energy
         cols = self.colors(energy)
-        strength = 0.5 if not self.light else 0.2
+        strength = 0.4 if not self.light else 0.18
         # aurora ribbons: a centre line per column, computed once per frame
         ribbons = []
         for k, col in enumerate(cols):
@@ -108,7 +108,7 @@ class Backdrop:
                 cy = h * (0.18 + 0.1 * k + 0.09 * math.sin(u * 5.3 + t * 0.21 * speed + phase)
                           + 0.04 * math.sin(u * 13.1 - t * 0.37 * speed + phase * 1.7))
                 centre.append(cy)
-                c = 0.55 + 0.45 * math.sin(u * 31.0 + t * 0.8 * speed + phase * 3.1)
+                c = 0.6 + 0.4 * math.sin(u * 17.0 + t * 0.8 * speed + phase * 3.1)
                 c *= 0.6 + 0.4 * math.sin(u * 7.0 - t * 0.33 + phase)
                 curtain.append(max(0.0, c))
             ribbons.append((col, centre, curtain, max(1.5, h * 0.05), h * (0.22 + 0.05 * k)))
