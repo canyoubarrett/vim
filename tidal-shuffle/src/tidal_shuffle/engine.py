@@ -65,6 +65,16 @@ class Engine:
         self._unavailable_reported: set[str] = set()
 
     # ------------------------------------------------------------------
+    def cancel(self) -> None:
+        """Ask sources to stop work for a song that is no longer playing."""
+        for src in self.sources:
+            cancel = getattr(src, "cancel", None)
+            if cancel:
+                try:
+                    cancel()
+                except Exception:
+                    pass
+
     def effective_seeds(self, current: Seed, anchor: Optional[Seed], recent: Sequence[Seed]) -> list[Seed]:
         mode = self.config.shuffle.seed
         if mode == "anchor" and anchor is not None:

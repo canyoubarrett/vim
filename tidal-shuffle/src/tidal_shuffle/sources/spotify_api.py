@@ -26,6 +26,7 @@ from ..http import HttpError, get_json, make_client
 from ..matching import core_title, primary_artist, score_match
 from ..models import Candidate, Seed, VibeParams
 from .base import dedupe, tag
+from ..lru import BoundedDict
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
@@ -74,7 +75,7 @@ class SpotifyApiSource:
         self.recommendations_available: Optional[bool] = None
         self.related_available: Optional[bool] = None
         self.top_tracks_available: Optional[bool] = None
-        self._cache: dict[tuple, object] = {}
+        self._cache = BoundedDict(400)
 
     # -- auth ---------------------------------------------------------------
     def available(self) -> tuple[bool, str]:

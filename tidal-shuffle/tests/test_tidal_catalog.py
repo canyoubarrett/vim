@@ -129,6 +129,7 @@ class FakeLoginSession:
         return link, SimpleNamespace(result=lambda: None)
     def save_session_to_file(self, path):
         self.saved = path
+        Path(path).write_text('{"token": "%s"}' % getattr(self, "access_token", ""))
 
 
 def test_connect_session_loads_existing(tmp_path):
@@ -203,7 +204,9 @@ def test_persist_session_only_when_token_changed(tmp_path):
     connect_session(f, printer=lambda m: None, session_factory=lambda: sess)
     assert persist_session(sess) is False
     sess.access_token = "new"
-    assert persist_session(sess) is True and sess.saved == f
+    assert persist_session(sess) is True
+    assert '"new"' in f.read_text() and not f.with_suffix(".tmp").exists()
+    assert oct(f.stat().st_mode & 0o777) == "0o600"
     assert persist_session(sess) is False
 
 
@@ -242,3 +245,23 @@ def test_live_and_studio_versions_get_separate_cache_entries():
     cat = TidalCatalog(s)
     assert cat.find("Blue Monday (Live)", "New Order")[0].id == "1"
     assert cat.find("Blue Monday", "New Order")[0].id == "2"
+
+
+def test_tidalapi_requests_get_a_default_timeout():
+    import requests
+    from tidal_shuffle.tidal.catalog import add_default_timeout
+    sess = SimpleNamespace(request_session=requests.Session())
+    add_default_timeout(sess, timeout=7.5)
+    adapter = sess.request_session.get_adapter("https://api.tidal.com/v1/search")
+    seen = {}
+    def fake_send(self, request, **kwargs):
+        seen.update(kwargs)
+        raise requests.ConnectionError("stop")
+    import types
+    adapter.__class__.__bases__[0].send, original = fake_send, adapter.__class__.__bases__[0].send
+    try:
+        with pytest.raises(requests.ConnectionError):
+            sess.request_session.get("https://api.tidal.com/v1/search")
+    finally:
+        adapter.__class__.__bases__[0].send = original
+    assert seen["timeout"] == 7.5

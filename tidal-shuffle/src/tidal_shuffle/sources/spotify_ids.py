@@ -20,6 +20,7 @@ import httpx
 from ..http import HttpError, make_client, post_json
 from ..matching import core_title, primary_artist
 from ..models import Seed
+from ..lru import BoundedDict
 
 
 class SpotifyIdLookup(Protocol):
@@ -45,7 +46,7 @@ class ListenBrainzSpotifyIds:
         self._clock = clock
         self._last = -1e9
         self._dead: Optional[str] = None
-        self._cache: dict[tuple, Optional[str]] = {}
+        self._cache = BoundedDict(500)
         self.log = log or (lambda m: None)
 
     def available(self) -> tuple[bool, str]:

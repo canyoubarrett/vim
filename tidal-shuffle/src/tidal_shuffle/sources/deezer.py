@@ -16,6 +16,7 @@ from ..http import HttpError, get_json, make_client
 from ..matching import core_title, primary_artist, score_match
 from ..models import Candidate, Seed
 from .base import dedupe, tag
+from ..lru import BoundedDict
 
 API = "https://api.deezer.com"
 
@@ -41,7 +42,7 @@ class DeezerSource:
         self._client = client or make_client()
         self._sleep = sleep
         self.log = log or (lambda m: None)
-        self._cache: dict[tuple, object] = {}
+        self._cache = BoundedDict(400)
 
     def available(self) -> tuple[bool, str]:
         return (True, "") if self.enabled else (False, "disabled in config (deezer.enabled)")

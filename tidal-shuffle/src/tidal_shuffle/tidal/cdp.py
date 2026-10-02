@@ -98,7 +98,11 @@ class CdpConnection:
         self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            raw = self._ws.recv()
+            try:
+                raw = self._ws.recv()
+            except Exception as e:
+                # The message was delivered; resending could click twice.
+                raise CdpError(f"{method}: no reply ({e})") from None
             if not raw:
                 continue
             msg = json.loads(raw)
@@ -243,12 +247,16 @@ class TidalCdp:
                 self._conn = None
 
     def evaluate(self, js: str, timeout: float = 10.0) -> Any:
+        """Run JavaScript in the player. Retried once only when the request never
+        left (stale socket); a missing reply is not retried, because the script
+        may have run (clicking Play twice would pause the song)."""
         for attempt in range(2):
             try:
                 return self._connection().evaluate(js, timeout=timeout)
             except CdpError:
+                self.close()
                 raise
-            except Exception as e:  # socket dropped, target gone, ...
+            except Exception as e:  # connecting or sending failed: nothing ran
                 self.close()
                 if attempt == 1:
                     raise CdpError(f"CDP connection failed: {e}") from None
@@ -316,7 +324,7 @@ class TidalCdp:
         return str(self.evaluate("location.pathname") or "")
 
     # -- navigation & playback ------------------------------------------------
-    def navigate_to_track(self, track_id: str) -> bool:
+    def navigate_to_track(self, track_id: str, return_status: bool = False):
         """Route the single-page app to ``/track/<id>`` without reloading."""
         js = f"""
         (() => {{
@@ -327,7 +335,8 @@ class TidalCdp:
           return location.pathname === target ? 'pushed' : 'failed';
         }})()
         """
-        return self.evaluate(js) in ("pushed", "already")
+        status = self.evaluate(js)
+        return status if return_status else status in ("pushed", "already")
 
     def rows_ready(self, track_id: Optional[str] = None):
         """``True`` when the track's row is rendered, ``"other"`` when rows are
@@ -408,9 +417,12 @@ class TidalCdp:
     def prepare(self, track_id: str, timeout: float = 15.0) -> bool:
         """Navigate to the track page ahead of time so the hand-off is instant."""
         try:
-            if not self.navigate_to_track(track_id):
+            status = self.navigate_to_track(track_id, return_status=True)
+            if status not in ("pushed", "already"):
                 self.log(f"could not navigate TIDAL to track {track_id}")
                 return False
+            if status == "already" and self.rows_ready(track_id) in (True, "other"):
+                return True  # prepared earlier: do not wait again at hand-off time
         except CdpError as e:
             self.log(f"navigate failed: {e}")
             return False

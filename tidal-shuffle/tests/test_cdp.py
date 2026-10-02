@@ -198,3 +198,29 @@ def test_launch_waits_for_endpoint():
     assert cdp.launch() is True
     assert any("--remote-debugging-port=9333" in c for c in state["popen"][0])
     assert any(c[0] == "osascript" for c in state["runs"])
+
+
+def test_prepared_page_is_not_waited_for_again():
+    cdp, page, clock = make()
+    page.rows["/track/1"] = ["2"]  # the row has no self-link: "other"
+    assert cdp.prepare("1", timeout=6) is True
+    before = clock.t
+    out = cdp.play_track("1", verify_timeout=2)
+    assert clock.t - before <= 2.0 + 0.5  # only the 2 s verification, no 3 s grace wait first
+    assert out.method == "first-row"
+
+
+def test_missing_reply_is_not_resent():
+    class NoReply:
+        def __init__(self): self.sent = 0
+        def evaluate(self, js, timeout=10.0):
+            self.sent += 1
+            raise CdpError("Runtime.evaluate: no reply (timed out)")
+        def close(self): pass
+    conn = NoReply()
+    clock = Clock()
+    cdp = TidalCdp(http_get=lambda u, t: json.dumps([{"type": "page", "url": "https://desktop.tidal.com/", "webSocketDebuggerUrl": "ws://p"}]),
+                   connect=lambda ws: conn, sleep=clock.sleep, clock=clock)
+    with pytest.raises(CdpError):
+        cdp.click_play_for_track("5")
+    assert conn.sent == 1

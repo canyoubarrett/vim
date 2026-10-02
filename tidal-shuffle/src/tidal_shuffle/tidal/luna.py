@@ -52,13 +52,16 @@ class LunaApi:
         return isinstance(state, dict) and ("playing" in state or "track" in state)
 
     def state(self) -> dict:
-        s = self._request("GET", "/")
+        try:
+            s = self._request("GET", "/")
+        except Exception:
+            return {}
         return s if isinstance(s, dict) else {}
 
     def _post(self, action: str, body: Optional[dict] = None) -> bool:
         try:
             res = self._request("POST", f"/{action}", body or {})
-        except (urllib.error.URLError, OSError, ValueError):
+        except Exception:  # URLError, OSError, http.client.HTTPException, bad JSON...
             return False
         return isinstance(res, dict) and res.get("type") != "error"
 

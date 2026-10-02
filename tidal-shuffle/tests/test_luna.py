@@ -48,3 +48,13 @@ def test_error_responses_are_false():
     api = LunaApi(opener=Err())
     assert api.play_next("1") is False
     assert LunaApi(opener=FakeServer(alive=False)).play_next("1") is False
+
+
+def test_http_protocol_errors_are_not_fatal():
+    import http.client
+    def broken(req, timeout):
+        if req.get_method() == "POST":
+            raise http.client.BadStatusLine("garbage")
+        return json.dumps({"playing": True}).encode()
+    api = LunaApi(opener=broken)
+    assert api.alive() and api.play_next("1") is False

@@ -20,6 +20,7 @@ half a second per song.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -31,6 +32,7 @@ from ..config import SpotifyAppConfig
 from ..matching import artist_similarity, normalize, primary_artist, same_song
 from ..models import Candidate, Seed
 from .base import tag
+from ..lru import BoundedDict
 
 SPOTIFY_BUNDLE = "com.spotify.client"
 US = "\x1f"
@@ -260,13 +262,15 @@ class SpotifyAppSource:
         self._clock = clock
         self._dead: Optional[str] = None
         self._station_works: Optional[bool] = None
-        self._cache: dict[str, list[Candidate]] = {}
+        self._cache = BoundedDict(100)
         self._bad_ids: set[str] = set()
         self.last_lookup: str = ""
         self._ui_touched = False
         self._launched_by_us = False
         self._busy_volume: Optional[int] = None
         self._station_failures = 0
+        self._lock = threading.Lock()   # Spotify can only run one harvest at a time
+        self._cancelled = False
 
     # -- availability ---------------------------------------------------------
     def installed(self) -> bool:
@@ -370,6 +374,13 @@ class SpotifyAppSource:
     def _should_quit(self) -> bool:
         q = self.cfg.quit_after
         return q is True or (q == "auto" and self._launched_by_us)
+
+    def cancel(self) -> None:
+        """The song changed: stop a harvest that is no longer needed (it restores Spotify itself)."""
+        if self._busy_volume is not None and hasattr(self.runner, "stop_all"):
+            self._cancelled = True
+            if self.runner.stop_all():
+                self.log("stopped the Spotify harvest for the previous song")
 
     def abort(self) -> None:
         """Called on Ctrl+C: pause Spotify and restore its volume if a harvest is running."""
@@ -543,8 +554,16 @@ class SpotifyAppSource:
 
     # -- Source protocol ------------------------------------------------------
     def candidates(self, seeds: Sequence[Seed], limit: int) -> list[Candidate]:
+        with self._lock:
+            self._cancelled = False
+            return self._candidates(seeds, limit)
+
+    def _candidates(self, seeds: Sequence[Seed], limit: int) -> list[Candidate]:
         seed = seeds[0]
-        with busy("spotify-harvest", seconds=self.cfg.max_seconds + 30):
+        # While Spotify plays (muted), it owns macOS's now-playing slot. Cover the
+        # longest the harvest can take, launch included.
+        busy_for = self.cfg.max_seconds + 60 + self.cfg.launch_timeout + 30
+        with busy("spotify-harvest", seconds=busy_for, linger=5.0):
             try:
                 st = self.ensure_running()
             except SpotifyAppError as e:
@@ -566,7 +585,8 @@ class SpotifyAppSource:
                 cands, meta = self.harvest(uri, max(limit, self.cfg.harvest), orig_volume=orig_volume)
                 harvested = True
             except SpotifyAppError as e:
-                self.log(f"Spotify app harvest failed: {e}")
+                if not self._cancelled:
+                    self.log(f"Spotify app harvest failed: {e}")
                 return []
             finally:
                 if self._ui_touched and not harvested:

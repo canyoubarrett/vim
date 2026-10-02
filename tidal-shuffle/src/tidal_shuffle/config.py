@@ -627,6 +627,10 @@ def write_example_config(path: Optional[Path] = None, overwrite: bool = False) -
         raise FileExistsError(str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(EXAMPLE_CONFIG)
+    try:
+        os.chmod(path, 0o600)  # it will hold API keys
+    except OSError:
+        pass
     return path
 
 

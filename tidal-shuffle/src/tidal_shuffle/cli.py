@@ -173,6 +173,13 @@ def run(dry_run, once, **kwargs):
     _print_startup(rt, method)
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True)
+    import signal
+
+    def _stop(signum, frame):  # closing the terminal or `kill` should clean up like Ctrl+C
+        raise KeyboardInterrupt
+    for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if sig is not None:
+            signal.signal(sig, _stop)
     try:
         loop.run(dry_run=dry_run, once=once)
     except KeyboardInterrupt:

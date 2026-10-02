@@ -7,12 +7,14 @@ ISRC lookup, and fuzzy matching of a (title, artist) pair to a TIDAL track.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..matching import DEFAULT_ACCEPT_THRESHOLD, core_title, normalize, primary_artist, score_match, strip_featuring
 from ..models import Candidate, Seed, TidalTrack
+from ..lru import BoundedDict
 
 log = logging.getLogger(__name__)
 Printer = Callable[[str], None]
@@ -63,6 +65,30 @@ def to_track(t: Any) -> TidalTrack:
     )
 
 
+def add_default_timeout(session: Any, timeout: float = 20.0) -> None:
+    """tidalapi never passes a timeout; a dead connection after sleep would hang forever."""
+    req = getattr(session, "request_session", None)
+    if req is None:
+        return
+    import requests
+
+    class _TimeoutAdapter(requests.adapters.HTTPAdapter):
+        def send(self, request, **kwargs):  # type: ignore[override]
+            if kwargs.get("timeout") is None:
+                kwargs["timeout"] = timeout
+            return super().send(request, **kwargs)
+
+    req.mount("https://", _TimeoutAdapter())
+    req.mount("http://", _TimeoutAdapter())
+
+
+def _protect(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)  # the file holds a long-lived refresh token
+    except OSError:
+        pass
+
+
 def connect_session(session_file: Path, printer: Printer = print, interactive: bool = True,
                     session_factory: Optional[Callable[[], Any]] = None) -> Any:
     """Return a logged-in ``tidalapi.Session``.
@@ -77,12 +103,15 @@ def connect_session(session_file: Path, printer: Printer = print, interactive: b
         # openapi v2 ISRC lookup), so keep it modest.
         session_factory = lambda: tidalapi.Session(tidalapi.Config(item_limit=100))  # noqa: E731
     session = session_factory()
+    add_default_timeout(session)
     session_file = Path(session_file).expanduser()
     if session_file.exists():
         try:
             session.load_session_from_file(session_file)
         except Exception as e:  # corrupt/expired file, dead refresh token...; fall through to login
             log.info("could not load TIDAL session: %s", e)
+            if interactive:
+                printer(f"Your saved TIDAL login could not be used ({e}); logging in again.")
     try:
         if session.check_login():
             session._tidal_shuffle_loaded_token = getattr(session, "access_token", None)
@@ -100,12 +129,18 @@ def connect_session(session_file: Path, printer: Printer = print, interactive: b
     printer(f"  https://{login.verification_uri_complete}")
     try:
         future.result()
+    except KeyboardInterrupt:
+        # tidalapi polls on a non-daemon thread that cannot be cancelled; leave now
+        # instead of hanging until the login link expires.
+        printer("Login cancelled.")
+        os._exit(130)
     except Exception as e:
         raise TidalLoginRequired(f"TIDAL login failed: {e}") from None
     if not session.check_login():
         raise TidalLoginRequired("TIDAL login did not complete")
     session_file.parent.mkdir(parents=True, exist_ok=True)
     session.save_session_to_file(session_file)
+    _protect(session_file)
     session._tidal_shuffle_loaded_token = getattr(session, "access_token", None)
     session._tidal_shuffle_session_file = session_file
     return session
@@ -119,7 +154,10 @@ def persist_session(session: Any) -> bool:
     if getattr(session, "access_token", None) == getattr(session, "_tidal_shuffle_loaded_token", None):
         return False
     try:
-        session.save_session_to_file(Path(path))
+        tmp = Path(path).with_suffix(".tmp")
+        session.save_session_to_file(tmp)  # write aside, then swap in: a crash cannot truncate it
+        _protect(tmp)
+        os.replace(tmp, path)
         session._tidal_shuffle_loaded_token = session.access_token
         return True
     except Exception as e:
@@ -137,8 +175,8 @@ class TidalCatalog:
         self.threshold = threshold
         self.log = log_fn or (lambda m: None)
         self._sleep = sleep
-        self._find_cache: dict[tuple, tuple[Optional[TidalTrack], float]] = {}
-        self._track_cache: dict[str, Optional[TidalTrack]] = {}
+        self._find_cache = BoundedDict(2000)
+        self._track_cache = BoundedDict(2000)
 
     # -- raw access ---------------------------------------------------------
     def _retry(self, fn: Callable[[], Any], what: str) -> Any:

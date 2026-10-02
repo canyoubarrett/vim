@@ -100,8 +100,16 @@ class ShuffleLoop:
         return same_song(np.title, np.artist, exp.track.title, exp.track.artist) or \
             same_song(np.title, np.artist, exp.candidate.title, exp.candidate.artist)
 
+    def _history_add(self, title: str, artist: str, tidal_id: Optional[str], source: str) -> None:
+        try:
+            self.history.add(title, artist, tidal_id=tidal_id, source=source)
+        except OSError as e:  # disk full, read-only config dir...: keep shuffling
+            if not getattr(self, "_history_warned", False):
+                self.log(f"⚠ could not save the play history: {e}")
+                self._history_warned = True
+
     def _record(self, pick: Pick) -> None:
-        self.history.add(pick.track.title, pick.track.artist, tidal_id=pick.track.id, source=pick.source)
+        self._history_add(pick.track.title, pick.track.artist, pick.track.id, pick.source)
         self.state.picks_played += 1
         self.state.recorded = True
 
@@ -136,9 +144,11 @@ class ShuffleLoop:
             # Songs you (or TIDAL) chose count as heard, so they are not picked again soon.
             last = self.history.recent(1)
             if not last or last[0].key != np.key:
-                self.history.add(np.title, np.artist, tidal_id=np.tidal_id, source="tidal")
+                self._history_add(np.title, np.artist, np.tidal_id, "tidal")
         st.tracks_seen += 1
         st.generation += 1
+        if st.planning is not None and not st.planning.done():
+            self.engine.cancel()  # e.g. stop a Spotify harvest for the song you skipped
         st.planning = None  # a plan still running for the previous song is ignored when it lands
         st.current = np
         st.started_at = now - pos
@@ -267,6 +277,18 @@ class ShuffleLoop:
         return False
 
     # -- one iteration ----------------------------------------------------------
+    def _same_as_current(self, np: NowPlaying) -> bool:
+        cur = self.state.current
+        if cur is None:
+            return False
+        if np.tidal_id and cur.tidal_id:
+            return np.tidal_id == cur.tidal_id
+        if np.same_track(cur):
+            return True
+        # One reader may credit "A" where another says "A, B": same song if the titles agree.
+        from .matching import normalize
+        return bool(cur.tidal_id) and not np.tidal_id and normalize(np.title) == normalize(cur.title)
+
     def _observe(self, np: Optional[NowPlaying], now: float) -> bool:
         """Fold a now-playing snapshot into the state. Returns True if TIDAL is live."""
         st = self.state
@@ -275,7 +297,7 @@ class ShuffleLoop:
             st.pending = None
             return False
         st.last_seen = now
-        if st.current is not None and np.same_track(st.current):
+        if st.current is not None and self._same_as_current(np):
             st.pending = None
             if np.duration is not None:
                 st.current.duration = np.duration

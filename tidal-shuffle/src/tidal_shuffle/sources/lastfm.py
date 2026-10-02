@@ -16,6 +16,7 @@ from ..cache import DiskCache
 from ..http import HttpError, get_json, make_client
 from ..models import Candidate, Seed
 from .base import tag
+from ..lru import BoundedDict
 
 API_URL = "https://ws.audioscrobbler.com/2.0/"
 FATAL_CODES = {4: "authentication failed", 10: "invalid API key", 26: "API key suspended"}
@@ -39,7 +40,7 @@ class LastfmSource:
         self._clock = clock
         self._last = -1e9
         self.min_interval = min_interval  # Last.fm allows 5 requests/s on average; stay well under
-        self._cache: dict[tuple, object] = {}
+        self._cache = BoundedDict(400)
         self._disk = disk_cache  # Last.fm's terms ask for similarity data to be cached for a week
         self._dead: Optional[str] = None
 

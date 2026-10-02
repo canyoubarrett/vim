@@ -13,6 +13,7 @@ from typing import Callable, Optional
 import httpx
 
 from ..http import HttpError, get_json, make_client
+from ..lru import BoundedDict
 
 API_URL = "https://api.song.link/v1-alpha.1/links"
 
@@ -29,7 +30,7 @@ class OdesliMapper:
         self._sleep = sleep
         self._clock = clock
         self._last_call = -1e9
-        self._cache: dict[str, Optional[dict]] = {}
+        self._cache = BoundedDict(500)
         self._dead: Optional[str] = None
         self.log = log or (lambda m: None)
 

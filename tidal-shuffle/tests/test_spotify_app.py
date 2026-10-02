@@ -283,3 +283,30 @@ def test_quit_after_option():
         fake.running = True
     make(fake, cfg=SpotifyAppConfig(harvest=3, quit_after=False), run=run).candidates([Seed("Seed", "S")], 3)
     assert fake.quit == 0
+
+
+def test_harvests_are_serialised_and_cancellable():
+    import threading
+    fake = FakeSpotify(station=[track(1)])
+    started, release = threading.Event(), threading.Event()
+    original = fake.run
+    def slow(script, timeout=10.0):
+        if "on harvest(" in script:
+            started.set()
+            release.wait(5)
+        return original(script, timeout)
+    fake.run = slow
+    stopped = []
+    fake.stop_all = lambda: (stopped.append(1), release.set()) and 1
+    src = make(fake)
+    results = []
+    t1 = threading.Thread(target=lambda: results.append(src.candidates([Seed("Seed", "S")], 5)))
+    t1.start()
+    assert started.wait(2)
+    t2 = threading.Thread(target=lambda: results.append(src.candidates([Seed("Seed", "S")], 5)))
+    t2.start()
+    t2.join(0.3)
+    assert t2.is_alive()  # waits for the first harvest instead of driving Spotify twice
+    src.cancel()
+    t1.join(3); t2.join(3)
+    assert stopped == [1] and len(results) == 2

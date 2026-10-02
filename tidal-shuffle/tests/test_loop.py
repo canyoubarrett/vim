@@ -480,3 +480,45 @@ def test_planner_thread_is_a_daemon(tmp_path):
     assert planners and all(t.daemon for t in planners)
     src.release.set()
     loop.close()
+
+
+def test_a_skip_during_planning_cancels_the_stale_work(tmp_path):
+    src = SlowSource(cands())
+    cancelled = []
+    src.cancel = lambda: (cancelled.append(1), src.release.set())
+    loop, world, clock, logs = build_bg(tmp_path, src)
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(6):
+        loop.step(); clock.sleep(1)
+    assert src.started.wait(2)
+    world.start("User Choice", "Someone", duration=300, tidal_id="user")
+    loop.step()
+    assert cancelled == [1]
+    loop.close()
+
+
+def test_history_write_failure_does_not_stop_the_loop(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    def broken(*a, **k):
+        raise OSError(28, "No space left on device")
+    history.add = broken
+    world.start("Seed Song", "Seed Artist", duration=30, tidal_id="seed")
+    for _ in range(80):
+        loop.step(); clock.sleep(0.5)
+        if world.played:
+            break
+    assert world.played == ["t-Next One"]
+    assert sum("could not save the play history" in m for m in logs) == 1
+
+
+def test_same_track_by_id_even_if_artist_credit_differs(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Collab", "A", duration=300, tidal_id="c1")
+    loop.step()
+    seen = loop.state.tracks_seen
+    # a reader that credits "A, B" and has no id: still the same song
+    loop._observe(NowPlaying("Collab", "A, B", duration=300, elapsed=5, timestamp=clock.wall, playing=True,
+                             bundle_id=TIDAL_BUNDLE_ID), clock.mono)
+    loop._observe(NowPlaying("Collab", "A, B", duration=300, elapsed=6, timestamp=clock.wall, playing=True,
+                             bundle_id=TIDAL_BUNDLE_ID), clock.mono)
+    assert loop.state.tracks_seen == seen

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from typing import Optional, Protocol
 
 
@@ -25,6 +26,8 @@ class OsascriptRunner:
 
     def __init__(self, binary: str = "osascript"):
         self.binary = binary
+        self._procs: set = set()
+        self._lock = threading.Lock()
 
     @staticmethod
     def available() -> bool:
@@ -32,21 +35,36 @@ class OsascriptRunner:
 
     def run(self, script: str, timeout: float = 10.0) -> str:
         try:
-            proc = subprocess.run(
-                [self.binary, "-l", "AppleScript"],
-                input=script,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            proc = subprocess.Popen([self.binary, "-l", "AppleScript"], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except FileNotFoundError:
             raise AppleScriptError("osascript not found; this feature needs macOS") from None
+        with self._lock:
+            self._procs.add(proc)
+        try:
+            out, err = proc.communicate(script, timeout=timeout)
         except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
             raise AppleScriptError(f"AppleScript timed out after {timeout}s") from None
+        finally:
+            with self._lock:
+                self._procs.discard(proc)
         if proc.returncode != 0:
-            msg = (proc.stderr or proc.stdout or "").strip()
+            msg = (err or out or "").strip()
             raise AppleScriptError(msg or f"osascript exited with {proc.returncode}")
-        return proc.stdout.rstrip("\n")
+        return out.rstrip("\n")
+
+    def stop_all(self) -> int:
+        """Kill every osascript this runner started that is still running."""
+        with self._lock:
+            procs = list(self._procs)
+        for p in procs:
+            try:
+                p.kill()
+            except OSError:
+                pass
+        return len(procs)
 
 
 def app_is_running(runner: ScriptRunner, app_name: str, timeout: float = 5.0) -> bool:
