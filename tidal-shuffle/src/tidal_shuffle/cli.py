@@ -155,8 +155,18 @@ def _print_startup(rt, method: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _print_version(ctx, param, value):
+    if not value or ctx.resilient_parsing:
+        return
+    from .buildinfo import describe
+
+    click.echo(describe())
+    ctx.exit()
+
+
 @click.group()
-@click.version_option(__version__, prog_name="tidal-shuffle")
+@click.option("--version", is_flag=True, expose_value=False, is_eager=True, callback=_print_version,
+              help="Show the version, the code revision and where this copy is installed.")
 def cli():
     """A smarter shuffle for the TIDAL macOS app.
 
@@ -173,7 +183,10 @@ def cli():
 def run(dry_run, once, plain, **kwargs):
     """Follow TIDAL and keep the music going."""
     cfg = _config_from(kwargs)
-    _banner("Tidal Shuffle", "a smarter shuffle for the TIDAL app")
+    from .buildinfo import revision
+
+    rev = revision()
+    _banner("Tidal Shuffle", f"a smarter shuffle for the TIDAL app · {__version__}" + (f" · {rev}" if rev else ""))
     _require_macos("tidal-shuffle run")
     rt = _runtime(cfg)
     from .loop import ShuffleLoop
@@ -186,8 +199,17 @@ def run(dry_run, once, plain, **kwargs):
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True,
                        timing_path=TIMING_FILE)
     screen = None
-    if cfg.ui.screen == "full" and not plain and not once and console.is_terminal:
-        screen = _make_screen(cfg, rt, loop)
+    if cfg.ui.color != "auto":
+        _use_color(cfg.ui.color)
+    if cfg.ui.screen == "full" and not plain and not once:
+        if console.is_terminal:
+            screen = _make_screen(cfg, rt, loop)
+        else:
+            console.print("[yellow]full-screen view off: the output is not a terminal (piped or redirected)[/yellow]")
+    if screen is not None and console.color_system is None:
+        console.print("[yellow]your terminal reports no colour support (TERM="
+                      f"{os.environ.get('TERM', '')!s}{', NO_COLOR is set' if os.environ.get('NO_COLOR') else ''}); "
+                      "set ui.color: 256 or truecolor to force it[/yellow]")
     controls = _start_controls(cfg, loop, screen)
     import signal
 
@@ -222,6 +244,13 @@ def run(dry_run, once, plain, **kwargs):
         for stamp, msg, dim in list(screen.logs)[-12:]:   # what happened last, on the normal screen
             console.print(f"[dim]{stamp}[/dim] {escape(msg)}", highlight=False)
     console.print(f"\n[bold]Stopped after {loop.state.picks_played} picks. Happy listening.[/bold]")
+
+
+def _use_color(mode: str) -> None:
+    """Force a colour system when the terminal under-reports it (ui.color)."""
+    global console
+    systems = {"truecolor": "truecolor", "256": "256", "16": "standard"}
+    console = Console(color_system=systems.get(mode, "auto"), force_terminal=True if console.is_terminal else None)
 
 
 def _make_screen(cfg: AppConfig, rt, loop):
@@ -655,6 +684,38 @@ def spotify_ui_cmd(find, limit, config_path):
             plays += 1
         console.print(f"[dim]{role:12}[/dim] {escape(label)}{mark}", highlight=False)
     console.print(f"[dim]{len(rows)} labelled elements, {plays} track play buttons[/dim]")
+
+
+@cli.command()
+def update():
+    """Get the latest version (git pull) and reinstall it."""
+    import subprocess
+
+    from .buildinfo import PROJECT_DIR, describe, git_root, revision
+
+    root = git_root()
+    if root is None:
+        raise click.ClickException(
+            f"this copy ({PROJECT_DIR}) was not installed from a git clone, so it cannot update itself. "
+            "Download the latest zip, unzip it, and run `bash install.sh` in it.")
+    before = revision()
+    console.print(f"[dim]updating {root}[/dim]")
+    pull = subprocess.run(["git", "-C", str(root), "pull", "--ff-only"], capture_output=True, text=True)
+    console.print(escape((pull.stdout + pull.stderr).strip()), highlight=False)
+    if pull.returncode != 0:
+        raise click.ClickException("git pull failed (see above). If you changed files in that folder, "
+                                   f"`git -C {root} stash` and run `tidal-shuffle update` again.")
+    inst = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "-e", str(PROJECT_DIR)],
+                          capture_output=True, text=True)
+    if inst.returncode != 0:
+        console.print(escape(inst.stderr[-2000:]), highlight=False)
+        raise click.ClickException("reinstalling failed (see above); run `bash install.sh` in " + str(PROJECT_DIR))
+    after = revision()
+    if before == after:
+        console.print(f"[green]already up to date[/green]: {escape(describe())}")
+    else:
+        console.print(f"[green]updated[/green] {before} → {after}")
+        console.print(escape(describe()))
 
 
 @cli.command()

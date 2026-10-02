@@ -52,9 +52,20 @@ bindir="$(brew --prefix)/bin"
 ln -sf "$here/.venv/bin/tidal-shuffle" "$bindir/tidal-shuffle"
 say "Linked $bindir/tidal-shuffle"
 
+say "Installed: $("$here/.venv/bin/tidal-shuffle" --version)"
+# Is the `tidal-shuffle` your shell finds this one? (An older copy elsewhere on
+# PATH, e.g. from pipx or another folder, would keep running the old code.)
+found="$(command -v tidal-shuffle || true)"
+real() { "$python" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+if [ -n "$found" ] && [ "$(real "$found")" != "$(real "$here/.venv/bin/tidal-shuffle")" ]; then
+    printf '\033[33mWarning:\033[0m %s comes first on your PATH and is a different copy.\n' "$found"
+    printf '  Remove it (rm %s) or put %s first, then open a new terminal window.\n' "$found" "$bindir"
+fi
+
 cat <<'EOF'
 
-Done. Next:
+Done. Check with `tidal-shuffle --version` (in an already open window, run
+`hash -r` first if it still shows an older version). Next:
 
   tidal-shuffle login     # sign in to TIDAL (approve the link it prints)
   tidal-shuffle doctor    # checks everything and says how to fix it

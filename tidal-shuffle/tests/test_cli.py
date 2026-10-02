@@ -79,3 +79,21 @@ def test_presets_with_bad_yaml_is_a_clean_error(isolated_home):
 def test_missing_config_flag_is_reported(isolated_home):
     r = invoke("config", "show", "--config", str(isolated_home / "nope.yaml"))
     assert r.exit_code != 0 and "not found" in r.output
+
+
+def test_version_names_the_copy():
+    from click.testing import CliRunner
+
+    from tidal_shuffle.cli import cli
+    out = CliRunner().invoke(cli, ["--version"]).output
+    assert out.startswith("tidal-shuffle 0.3.0") and " from " in out
+
+
+def test_update_refuses_outside_a_git_clone(monkeypatch):
+    from click.testing import CliRunner
+
+    import tidal_shuffle.buildinfo as bi
+    from tidal_shuffle.cli import cli
+    monkeypatch.setattr(bi, "git_root", lambda: None)
+    res = CliRunner().invoke(cli, ["update"])
+    assert res.exit_code != 0 and "not installed from a git clone" in res.output

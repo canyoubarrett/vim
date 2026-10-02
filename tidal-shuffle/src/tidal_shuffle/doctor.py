@@ -28,6 +28,25 @@ def run_doctor(cfg: Optional[AppConfig], console: Console) -> None:
     table.add_column("how to fix")
     mac = platform.system() == "Darwin"
     _row(table, "macOS", mac, platform.platform(), "" if mac else "Tidal Shuffle only runs on macOS")
+    from .buildinfo import describe, git_root
+
+    _row(table, "version", True, describe(), "" if git_root() else "not a git clone: update by downloading the latest zip")
+    import os
+    import shutil
+
+    found = shutil.which("tidal-shuffle")
+    me = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__import__("sys").executable)), "tidal-shuffle"))
+    if found and os.path.realpath(found) != me:
+        _row(table, "command", False, f"`tidal-shuffle` on your PATH is {found}, not this copy",
+             "remove the other one, or run this copy's install.sh again")
+    colors = {None: "none", "standard": "16 colours", "256": "256 colours", "truecolor": "full colour",
+              "windows": "Windows colours"}
+    system = console.color_system
+    env = f"TERM={os.environ.get('TERM', '')}" + (f", COLORTERM={os.environ['COLORTERM']}" if os.environ.get("COLORTERM") else "")
+    good = system in ("256", "truecolor")
+    _row(table, "display", good if console.is_terminal else None,
+         f"{colors.get(system, system)} ({env})" + ("" if console.is_terminal else "; not a terminal"),
+         "" if good else "set ui.color: 256 (or truecolor) in the config, or pick a profile that declares xterm-256color")
 
     # Config
     if cfg is None:

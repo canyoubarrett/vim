@@ -86,6 +86,7 @@ class UiConfig:
     lyrics_sources: list[str] = field(default_factory=lambda: ["tidal", "lrclib"])
     visualizer: bool = True       # the floating Alter Era logo next to the lyrics
     theme: str = "mocha"          # Catppuccin flavor: mocha | macchiato | frappe | latte
+    color: str = "auto"           # auto | truecolor | 256 | 16: force it if the terminal under-reports
     logo_file: str = ""           # an .svg (traced into braille) or ---BIG--- / ---SMALL--- braille art
     cell_aspect: float = 0.5      # a terminal cell's width / height, so the logo keeps its proportions
     fps: float = 12.0
@@ -314,6 +315,7 @@ ui:
   lyrics_sources: [tidal, lrclib]
   visualizer: true          # the floating Alter Era logo next to the lyrics
   theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
+  color: auto               # auto | truecolor | 256 | 16 (force it if colours look wrong or missing)
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
   fps: 12
@@ -581,6 +583,7 @@ def _build(data: Mapping) -> AppConfig:
         "lyrics": _as_bool,
         "lyrics_sources": lambda v, n: [_as_choice(x, n, ("tidal", "lrclib")) for x in (v if isinstance(v, list) else str(v).split(","))],
         "visualizer": _as_bool,
+        "color": lambda v, n: _as_choice(str(v).lower(), n, ("auto", "truecolor", "256", "16")),
         "theme": lambda v, n: _as_choice(str(v).lower().replace("é", "e"), n, ("mocha", "macchiato", "frappe", "latte")),
         "logo_file": lambda v, n: str(v or ""),
         "cell_aspect": lambda v, n: _as_number(v, n, float, 0.2, 1.25),
