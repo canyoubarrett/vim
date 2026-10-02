@@ -72,6 +72,46 @@ def preset_sections(names) -> list:
     return out
 
 _STYLES: dict = {}
+_DEPTH = {"system": "truecolor"}
+_NEAREST: dict = {}
+
+# xterm's 256-colour palette above the 16 themeable ones: a 6x6x6 cube and 24 greys
+_CUBE = (0, 95, 135, 175, 215, 255)
+_PALETTE_256 = ([(16 + 36 * r + 6 * g + b, (_CUBE[r], _CUBE[g], _CUBE[b]))
+                 for r in range(6) for g in range(6) for b in range(6)]
+                + [(232 + i, (8 + 10 * i,) * 3) for i in range(24)])
+
+
+def nearest_256(rgb) -> int:
+    """The closest colour of the 256-colour palette, by a perceptual distance
+    ("redmean"). Rich's own downgrade turns Catppuccin's dark blue-greys into
+    pure black; this keeps them as the dark greys they nearly are."""
+    hit = _NEAREST.get(rgb)
+    if hit is None:
+        r1, g1, b1 = rgb
+        best, hit = None, 16
+        for idx, (r2, g2, b2) in _PALETTE_256:
+            rm = (r1 + r2) / 2
+            d = (2 + rm / 256) * (r1 - r2) ** 2 + 4 * (g1 - g2) ** 2 + (2 + (255 - rm) / 256) * (b1 - b2) ** 2
+            if best is None or d < best:
+                best, hit = d, idx
+        _NEAREST[rgb] = hit
+    return hit
+
+
+def set_color_depth(system: Optional[str]) -> None:
+    """Match colours to what the terminal shows ("truecolor", "256", ...)."""
+    if _DEPTH["system"] != system:
+        _DEPTH["system"] = system
+        _STYLES.clear()
+
+
+def _color(rgb):
+    if not rgb:
+        return None
+    if _DEPTH["system"] == "256":
+        return Color.from_ansi(nearest_256(tuple(rgb)))
+    return Color.from_rgb(*rgb)
 
 
 def style(fg=None, bold: bool = False, bg=None) -> Style:
@@ -79,8 +119,7 @@ def style(fg=None, bold: bool = False, bg=None) -> Style:
     key = (fg, bold, bg)
     st = _STYLES.get(key)
     if st is None:
-        st = Style(color=Color.from_rgb(*fg) if fg else None, bold=bold or None,
-                   bgcolor=Color.from_rgb(*bg) if bg else None)
+        st = Style(color=_color(fg), bold=bold or None, bgcolor=_color(bg))
         _STYLES[key] = st
     return st
 
@@ -959,6 +998,7 @@ class ShuffleTUI:
         """The whole screen as Segments: the sky, then the panels over it."""
         th = self.th
         try:
+            set_color_depth(console.color_system)
             self.animate()
             playing = self.loop.state.current is not None and self.loop.state.current.playing is not False
             if self.backdrop is not None:

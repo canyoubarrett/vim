@@ -183,7 +183,9 @@ def cli():
 @click.option("--dry-run", is_flag=True, help="Plan picks but never touch TIDAL")
 @click.option("--once", is_flag=True, help="Stop after the first plan")
 @click.option("--plain", is_flag=True, help="Scrolling log instead of the full-screen view with lyrics")
-def run(dry_run, once, plain, **kwargs):
+@click.option("--color", "color_opt", type=click.Choice(["auto", "truecolor", "256", "16"]), default=None,
+              help="Colours to use (overrides ui.color); see `tidal-shuffle colors`")
+def run(dry_run, once, plain, color_opt, **kwargs):
     """Follow TIDAL and keep the music going."""
     cfg = _config_from(kwargs)
     from .buildinfo import revision
@@ -202,24 +204,24 @@ def run(dry_run, once, plain, **kwargs):
     loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True,
                        timing_path=TIMING_FILE, apply_preset=rt.apply_preset)
     screen = None
-    if cfg.ui.color != "auto":
-        _use_color(cfg.ui.color)
+    color = color_opt or cfg.ui.color
+    hint = ""
+    if color != "auto":
+        _use_color(color)
     else:
         mode, hint = auto_color(os.environ, platform.mac_ver()[0], console.color_system)
         if mode:
-            _use_color(mode)
-        if hint and cfg.ui.screen == "full" and not plain:
-            console.print(f"[yellow]{hint}[/yellow]")
+            _use_color(mode, explicit=False)
+        if hint:
+            console.print(hint, style="yellow", markup=False)
     if cfg.ui.screen == "full" and not plain and not once:
         if console.is_terminal:
             screen = _make_screen(cfg, rt, loop)
             loop.max_poll = cfg.ui.track_poll     # see a new song (and drop the old lyrics) quickly
+            if hint:
+                screen.log(f"⚠ {hint}")             # the note above is hidden by the full screen
         else:
             console.print("[yellow]full-screen view off: the output is not a terminal (piped or redirected)[/yellow]")
-    if screen is not None and console.color_system is None:
-        console.print("[yellow]your terminal reports no colour support (TERM="
-                      f"{os.environ.get('TERM', '')!s}{', NO_COLOR is set' if os.environ.get('NO_COLOR') else ''}); "
-                      "set ui.color: 256 or truecolor to force it[/yellow]")
     controls = _start_controls(cfg, loop, screen)
     guard = _keep_spotify_hidden(cfg, [s for s in rt.sources if s.name == "spotify-app"])
     if guard is not None:
@@ -287,33 +289,37 @@ def _keep_spotify_hidden(cfg: AppConfig, spotify_sources: list):
 
 
 def auto_color(env, mac_version: str, system: Optional[str]) -> tuple[Optional[str], str]:
-    """(colour system to force, or None; a note for the user) for terminals that
-    do not say what they can show. Terminal.app never announces true colour
-    (it sets no COLORTERM): from macOS 26 it shows it, so it is switched on;
-    before that it has 256 colours only, and the Catppuccin tones come out
-    approximated."""
-    if system == "truecolor" or env.get("NO_COLOR"):
+    """(colour system to use, or None to keep what was detected; a note for
+    the user) for ``ui.color: auto``.
+
+    Terminal.app shows 256 colours for certain; whether it shows 24-bit
+    colour depends on the macOS version, and it never says (no COLORTERM).
+    Sending it 24-bit colour it cannot show leaves the screen colourless, so
+    it gets 256 colours, which are always right, with the theme matched to
+    its palette; `tidal-shuffle colors` shows whether true colour works."""
+    if env.get("NO_COLOR"):
+        return None, ("colours are off because NO_COLOR is set in your shell; "
+                      "unset it, or set ui.color: 256 to use colours anyway")
+    if system == "truecolor":
         return None, ""
     if env.get("TERM_PROGRAM") == "Apple_Terminal":
-        try:
-            major = int((mac_version or "0").split(".")[0])
-        except ValueError:
-            major = 0
-        if major >= 26:
-            return "truecolor", ""
-        return None, ("Terminal.app on this macOS shows 256 colours, so the Catppuccin colours are approximated; "
-                      "iTerm2, Ghostty, WezTerm or kitty show them exactly")
-    if system in ("256", "standard"):
-        return None, (f"your terminal reports {'256' if system == '256' else '16'} colours (COLORTERM is not set), "
-                      "so the theme is approximated; if it can show true colour, set ui.color: truecolor")
+        return "256", ("Terminal.app: 256 colours, with the theme matched to them; run `tidal-shuffle colors` "
+                       "to see whether your Terminal shows true colour (then set ui.color: truecolor)")
+    if system is None:
+        return "256", (f"your terminal did not report colour support (TERM={env.get('TERM', '')!r}); using 256 "
+                       "colours; run `tidal-shuffle colors` to check")
+    if system == "standard":
+        return None, ("your terminal reports 16 colours only, so the theme is approximated; "
+                      "run `tidal-shuffle colors` to check what it can show")
     return None, ""
 
 
-def _use_color(mode: str) -> None:
+def _use_color(mode: str, explicit: bool = True) -> None:
     """Force a colour system when the terminal under-reports it (ui.color)."""
     global console
     systems = {"truecolor": "truecolor", "256": "256", "16": "standard"}
-    console = Console(color_system=systems.get(mode, "auto"), force_terminal=True if console.is_terminal else None)
+    console = Console(color_system=systems.get(mode, "auto"), force_terminal=True if console.is_terminal else None,
+                      no_color=False if explicit else None)
 
 
 def _make_screen(cfg: AppConfig, rt, loop):
@@ -792,6 +798,47 @@ def update():
     else:
         console.print(f"[green]updated[/green] {before} → {after}")
         console.print(escape(describe()))
+
+
+@cli.command()
+def colors():
+    """Show which colours this terminal can display, to pick ui.color."""
+    import sys as _sys
+
+    env = os.environ
+    out = _sys.stdout
+    rows = [("TERM", env.get("TERM", "")), ("COLORTERM", env.get("COLORTERM", "")),
+            ("TERM_PROGRAM", f"{env.get('TERM_PROGRAM', '')} {env.get('TERM_PROGRAM_VERSION', '')}".strip()),
+            ("NO_COLOR", env.get("NO_COLOR", "")), ("macOS", platform.mac_ver()[0] or "-"),
+            ("output is a terminal", str(out.isatty())), ("detected", str(console.color_system))]
+    mode, hint = auto_color(env, platform.mac_ver()[0], console.color_system)
+    rows.append(("tidal-shuffle run uses", mode or str(console.color_system)))
+    for k, v in rows:
+        out.write(f"  {k:<24}{v}\n")
+    out.write("\n")
+    from .theme import theme as _theme
+    from .tui import nearest_256
+
+    names = ["mauve", "pink", "peach", "yellow", "green", "teal", "blue", "lavender", "surface1", "base", "crust"]
+    p = _theme("mocha").p
+    reset = "\x1b[0m"
+    line_a = "".join(f"\x1b[4{i}m  " for i in range(1, 7)) + reset
+    line_b = "".join(f"\x1b[48;5;{nearest_256(p[n])}m   " for n in names) + reset
+    line_c = "".join(f"\x1b[48;2;{p[n][0]};{p[n][1]};{p[n][2]}m   " for n in names) + reset
+    grad = "".join(f"\x1b[48;2;{int(30 + 200 * i / 40)};{int(30 + 60 * i / 40)};{int(160 + 80 * i / 40)}m " for i in range(40)) + reset
+    out.write(f"  A  16 colours      {line_a}\n")
+    out.write(f"  B  256 colours     {line_b}\n")
+    out.write(f"  C  true colour     {line_c}\n")
+    out.write(f"  D  true colour     {grad}\n\n")
+    out.write("  Rows B and C use the theme's colours: purple, pink, orange, yellow, green, teal, blue,\n"
+              "  lavender, then three dark greys.\n"
+              "  * C and D show those colours, D a smooth blue-to-pink blend: true colour works.\n"
+              "    Put this in the config (`tidal-shuffle config path`):  ui: {color: truecolor}\n"
+              "  * only A and B show colours (C and D grey, wrong or blank): keep ui.color: auto (256).\n"
+              "  * nothing shows colours: check Terminal's profile and that NO_COLOR is not set.\n")
+    if hint:
+        out.write(f"\n  note: {hint}\n")
+    out.flush()
 
 
 @cli.command()

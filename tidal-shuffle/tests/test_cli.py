@@ -86,7 +86,7 @@ def test_version_names_the_copy():
 
     from tidal_shuffle.cli import cli
     out = CliRunner().invoke(cli, ["--version"]).output
-    assert out.startswith("tidal-shuffle 0.6.2") and " from " in out
+    assert out.startswith("tidal-shuffle 0.6.3") and " from " in out
 
 
 def test_update_refuses_outside_a_git_clone(monkeypatch):
@@ -104,10 +104,24 @@ def test_auto_colour_for_terminal_app_and_others():
     from tidal_shuffle.cli import auto_color
 
     app = {"TERM_PROGRAM": "Apple_Terminal", "TERM": "xterm-256color"}
-    assert auto_color(app, "26.0.1", "256") == ("truecolor", "")
-    mode, hint = auto_color(app, "15.5", "256")
-    assert mode is None and "256 colours" in hint
+    for version in ("26.0.1", "15.5"):                 # 256 colours always show in Terminal.app
+        mode, hint = auto_color(app, version, "256")
+        assert mode == "256" and "tidal-shuffle colors" in hint
+    assert auto_color(app, "15.5", None)[0] == "256"
     assert auto_color({"TERM_PROGRAM": "iTerm.app", "COLORTERM": "truecolor"}, "15.5", "truecolor") == (None, "")
-    mode, hint = auto_color({"TERM": "xterm-256color"}, "", "256")
-    assert mode is None and "ui.color: truecolor" in hint
-    assert auto_color(dict(app, NO_COLOR="1"), "26.0", None) == (None, "")
+    assert auto_color({"TERM": "xterm-256color"}, "", "256") == (None, "")
+    mode, hint = auto_color({"TERM": "xterm"}, "", None)
+    assert mode == "256" and "did not report" in hint
+    mode, hint = auto_color(dict(app, NO_COLOR="1"), "26.0", None)
+    assert mode is None and "NO_COLOR" in hint
+
+
+def test_colors_command_shows_swatches(tmp_path):
+    from click.testing import CliRunner
+
+    from tidal_shuffle.cli import cli
+
+    res = CliRunner().invoke(cli, ["colors"], env={"TERM_PROGRAM": "Apple_Terminal", "TERM": "xterm-256color"})
+    assert res.exit_code == 0, res.output
+    assert "\x1b[48;5;183m" in res.output and "\x1b[48;2;203;166;247m" in res.output
+    assert "tidal-shuffle run uses  256" in res.output and "ui: {color: truecolor}" in res.output

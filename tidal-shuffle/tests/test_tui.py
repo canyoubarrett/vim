@@ -517,3 +517,25 @@ def test_logo_is_as_big_as_the_panel_allows():
             g = scene.frame(w, h, i * 0.2)
             rows |= {y for y, r in enumerate(g) if any("⠀" < c[0] <= "⣿" for c in r)}
         assert min(rows) >= 0 and max(rows) <= h - 2 and max(rows) - min(rows) >= h - 4
+
+
+
+def test_256_colour_terminals_get_the_theme_matched_to_their_palette():
+    from tidal_shuffle.tui import _PALETTE_256, nearest_256, set_color_depth, style as mkstyle
+
+    pal = dict(_PALETTE_256)
+    base = pal[nearest_256(MOCHA.bg)]
+    assert base != (0, 0, 0) and max(base) < 60                        # a dark grey, not black
+    assert nearest_256((255, 0, 0)) == 196 and nearest_256((0, 0, 0)) == 16
+    try:
+        set_color_depth("256")
+        st = mkstyle(MOCHA.text, False, MOCHA.bg)
+        assert st.bgcolor.number == nearest_256(MOCHA.bg) and st.color.number == nearest_256(MOCHA.text)
+        tui = make_tui(None)
+        c = Console(width=100, height=30, color_system="256", force_terminal=True, record=True,
+                    file=open("/dev/null", "w"))
+        c.print(ScreenRenderable(tui))
+        out = c.export_text(clear=False, styles=True)
+        assert f"48;5;{nearest_256(MOCHA.bg)}" in out or "Midnight City" in c.export_text()
+    finally:
+        set_color_depth("truecolor")

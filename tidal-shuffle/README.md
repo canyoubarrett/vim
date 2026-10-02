@@ -124,14 +124,23 @@ return. Covers dissolve into each other and the preset menu fades in and out.
 All of this is drawn cell by cell in true colour; if your terminal struggles
 to keep up (Terminal.app can), lower `ui.fps` or turn off `ui.backdrop`.
 
-**Colours in Terminal.app.** Terminal.app does not tell programs that it can
-show true colour (it sets no `COLORTERM`), so they fall back to its
-256-colour palette, which has no close match for Catppuccin's purples and
-blue-greys. On macOS 26 and later, where Terminal.app shows true colour,
-Tidal Shuffle switches it on by itself. On older macOS, Terminal.app really
-has only 256 colours: the theme is approximated, and `run` says so. iTerm2,
-Ghostty, WezTerm and kitty show the exact colours. `ui.color: truecolor`
-forces true colour in any terminal that supports it without saying so.
+**Colours in Terminal.app.** Terminal.app always shows 256 colours, but it
+never tells programs whether it can show 24-bit ("true") colour, and when
+it cannot, 24-bit colour codes leave the screen without colour. So in
+Terminal.app, Tidal Shuffle uses 256 colours, with every theme colour matched
+to the closest one in Terminal's palette by eye (dark blue-greys stay dark
+greys instead of turning black). To see what your terminal can show, run:
+
+```bash
+tidal-shuffle colors
+```
+
+It prints rows of colour swatches. If the true-colour rows show the theme's
+colours and a smooth blend, set `ui: {color: truecolor}` in the config (or
+try it once with `tidal-shuffle run --color truecolor`). If no row shows
+colours, check Terminal's profile, and that `NO_COLOR` is not set in your
+shell (`run` also says so in its log). iTerm2, Ghostty, WezTerm and kitty
+announce true colour and show the exact colours.
 
 **Presets menu.** Press `p` (or click the `p presets` chip) to open the
 preset menu over the logo and lyrics. Presets are grouped (energy & sound,
@@ -362,6 +371,7 @@ pick asked for them.
 | `doctor`                        | check dependencies, permissions, logins and the debug port |
 | `login [--force]`               | TIDAL device-link login                                   |
 | `presets`                       | list presets                                              |
+| `colors`                        | show which colours this terminal can display              |
 | `sources --seed "A - B"`        | what every source suggests for a song                     |
 | `history [--clear] [-n N]`      | songs heard and picked                                    |
 | `config init / show / path`     | manage the config file                                    |
