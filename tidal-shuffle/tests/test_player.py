@@ -111,3 +111,52 @@ def test_luna_verify_times_out_with_fake_clock():
     p = TidalPlayer(cfg, FakeCdp(alive=False), luna=luna, sleep=sleep, clock=lambda: t["now"])
     out = p.play(TidalTrack(id="5", title="T", artist="A"))
     assert not out.ok and t["now"] >= 2
+
+
+class QueueCdp(FakeCdp):
+    def __init__(self, answers):
+        super().__init__()
+        self.answers = list(answers)
+        self.asked = []
+        self.next_id = None
+    def store_queue_next(self, tid):
+        self.asked.append(tid)
+        res = self.answers.pop(0)
+        if res == "ok":
+            self.next_id = tid
+        return res
+    def store_next_id(self):
+        return self.next_id
+
+
+def test_stock_tidal_queue_is_used_and_checked():
+    cfg = load_config(env={}).player
+    cdp = QueueCdp(["ok"])
+    p = TidalPlayer(cfg, cdp)
+    p.ensure_ready()
+    t = TidalTrack(id="4", title="T", artist="A")
+    assert p.supports_queue() and p.queue_next(t)
+    assert p.queue_still_next(t)
+    cdp.next_id = "99"  # something else got in front of it
+    assert not p.queue_still_next(t)
+
+
+def test_unreadable_queue_is_given_up_at_once():
+    cfg = load_config(env={}).player
+    logs = []
+    cdp = QueueCdp(["unreadable"])
+    p = TidalPlayer(cfg, cdp, log=logs.append)
+    p.ensure_ready()
+    assert not p.queue_next(TidalTrack(id="4", title="T", artist="A"))
+    assert not p.supports_queue() and cdp.asked == ["4"]
+    assert any("not usable" in m for m in logs)
+
+
+def test_queue_that_does_not_take_twice_is_given_up():
+    cfg = load_config(env={}).player
+    cdp = QueueCdp(["not-next", "not-next"])
+    p = TidalPlayer(cfg, cdp, log=lambda m: None)
+    p.ensure_ready()
+    t = TidalTrack(id="4", title="T", artist="A")
+    assert not p.queue_next(t) and p.supports_queue()
+    assert not p.queue_next(t) and not p.supports_queue()

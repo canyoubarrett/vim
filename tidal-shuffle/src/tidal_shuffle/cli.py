@@ -21,6 +21,7 @@ from . import __version__
 from .config import (EXAMPLE_CONFIG, AppConfig, ConfigError, all_presets, default_config_path, load_config,
                      read_config_file, write_example_config)
 from .models import Seed
+from .paths import TIMING_FILE
 
 console = Console()
 err_console = Console(stderr=True)
@@ -172,7 +173,8 @@ def run(dry_run, once, **kwargs):
         raise click.ClickException(str(e))
     _print_startup(rt, method)
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
-    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True)
+    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, background=True,
+                       timing_path=TIMING_FILE)
     import signal
 
     def _stop(signum, frame):  # closing the terminal or `kill` should clean up like Ctrl+C
@@ -200,7 +202,7 @@ def test(**kwargs):
     from .loop import ShuffleLoop
 
     _print_startup(rt, rt.player.method())
-    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say)
+    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, timing_path=TIMING_FILE)
     np = rt.nowplaying.read()
     if np is None or not np.is_tidal:
         raise click.ClickException("TIDAL is not playing anything right now")
@@ -232,7 +234,7 @@ def next_cmd(**kwargs):
         rt.player.ensure_ready(allow_relaunch=False)  # never stop the music we are about to skip
     except RuntimeError as e:
         raise click.ClickException(str(e))
-    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say)
+    loop = ShuffleLoop(cfg, rt.engine, rt.player, rt.nowplaying, rt.history, log=say, timing_path=TIMING_FILE)
     ok = loop.skip_now()
     rt.close()
     if not ok:

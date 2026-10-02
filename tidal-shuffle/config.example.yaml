@@ -32,7 +32,9 @@ shuffle:
 
 player:
   nowplaying_backend: auto  # auto | media-control | nowplaying-cli
-  handoff_seconds: 2.0      # start the next song this many seconds before the end
+  handoff_seconds: 3.0      # start the next song at least this many seconds before the end
+  adaptive_handoff: true    # learn how long TIDAL takes to start a song and start earlier if needed
+  handoff_margin: 1.0       # extra seconds on top of the learned start time
   prepare_seconds: 10.0     # open the next song's page this many seconds before the end
   poll_interval: 2.0        # seconds between now-playing checks
   near_end_poll_interval: 0.4

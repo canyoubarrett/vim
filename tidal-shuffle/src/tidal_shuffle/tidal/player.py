@@ -39,6 +39,8 @@ class TidalPlayer:
         self._cdp_ok: Optional[bool] = None
         self._luna_ok: Optional[bool] = None
         self._cdp_luna: Optional[bool] = None
+        self._store_queue_failures = 0
+        self._queued_via: Optional[str] = None
 
     # ------------------------------------------------------------------
     def cdp_available(self, refresh: bool = False) -> bool:
@@ -64,19 +66,48 @@ class TidalPlayer:
 
     def supports_queue(self) -> bool:
         """Can we hand TIDAL a "play this next" instead of a hard cut-over?"""
-        return self.luna_available() or self.cdp_luna_available()
+        return self.luna_available() or self.cdp_luna_available() or self._store_queue_possible()
+
+    def _store_queue_possible(self) -> bool:
+        return self._store_queue_failures < 2 and self.cdp_available()
 
     def queue_next(self, track: TidalTrack) -> bool:
+        self._queued_via = None
         if self.luna_available():
             if self.luna.play_next(track.id):
+                self._queued_via = "luna"
                 return True
             self._luna_ok = None
         if self.cdp_luna_available():
             try:
-                return self.cdp.luna_queue_next(track.id)
+                if self.cdp.luna_queue_next(track.id):
+                    self._queued_via = "luna"
+                    return True
             except CdpError as e:
                 self.log(f"luna queue failed: {e}")
+        if self._store_queue_possible():
+            try:
+                res = self.cdp.store_queue_next(track.id)
+            except CdpError as e:
+                res = f"error: {e}"
+            if res == "ok":
+                self._store_queue_failures = 0
+                self._queued_via = "store"
+                return True
+            # A queue we cannot read is never written to; give up on it for this run.
+            permanent = res in ("no-store", "unreadable") or res.startswith("error")
+            self._store_queue_failures = 2 if permanent else self._store_queue_failures + 1
+            self.log(f"TIDAL queue not usable ({res}); starting songs at the end instead")
         return False
+
+    def queue_still_next(self, track: TidalTrack) -> bool:
+        """Is the queued track still the one TIDAL plays next? (``True`` when unknown.)"""
+        if self._queued_via != "store":
+            return True
+        try:
+            return self.cdp.store_next_id() == track.id
+        except CdpError:
+            return False
 
     def ensure_ready(self, allow_relaunch: bool = True) -> str:
         """Prepare the preferred method at startup; returns the method name.

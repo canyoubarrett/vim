@@ -504,6 +504,66 @@ class TidalCdp:
         """)
         return str(self.evaluate(js) or "")
 
+    # Reads TIDAL's play queue: {cur, next} track ids, or null when its shape is unknown.
+    _QUEUE_IDS = """
+          const queueIds = (st) => {
+            const q = (st.getState() || {}).playQueue;
+            if (!q) return null;
+            const els = Array.isArray(q.elements) ? q.elements : (Array.isArray(q.items) ? q.items : null);
+            const i = typeof q.currentIndex === 'number' ? q.currentIndex : (typeof q.index === 'number' ? q.index : null);
+            if (!els || i === null) return null;
+            const idOf = e => {
+              if (!e) return null;
+              const v = e.mediaItemId ?? e.id ?? (e.mediaItem && e.mediaItem.id) ?? (e.item && e.item.id);
+              return v === undefined || v === null ? null : String(v);
+            };
+            return {cur: idOf(els[i]), next: idOf(els[i + 1])};
+          };
+          const footerId = () => {
+            const f = document.querySelector(S.footer) || document;
+            const t = document.querySelector(S.footer_title);
+            const a = (t && t.closest('a')) || f.querySelector('a[href*="/track/"]');
+            const m = a && (a.getAttribute('href') || '').match(/\\/track\\/(\\d+)/);
+            return m ? m[1] : null;
+          };
+    """
+
+    def store_queue_next(self, track_id: str) -> str:
+        """Put the track right after the current one in TIDAL's own queue, so TIDAL
+        moves to it by itself (gapless). Returns ``'ok'`` only when the queue then
+        shows it as next; never dispatches when the queue's shape is not understood."""
+        js = self._page_js("store_queue", track_id, self._FIND_STORE + self._QUEUE_IDS + """
+          const st = findStore();
+          if (!st) return 'no-store';
+          const before = queueIds(st);
+          if (!before || !before.cur) return 'unreadable';
+          const shown = footerId();
+          if (shown && shown !== before.cur) return 'unreadable';
+          if (before.next === ID) return 'ok';
+          try {
+            st.dispatch({type: 'playQueue/ADD_NEXT', payload: {context: {type: 'UNKNOWN'}, mediaItemIds: [Number(ID)]}});
+          } catch (e) { return 'error: ' + e; }
+          return (async () => {
+            for (let i = 0; i < 10; i++) {
+              const after = queueIds(st);
+              if (after && after.next === ID) return 'ok';
+              await new Promise(r => setTimeout(r, 200));
+            }
+            return 'not-next';
+          })();
+        """)
+        return str(self.evaluate(js, timeout=15.0) or "")
+
+    def store_next_id(self) -> Optional[str]:
+        """The track TIDAL's queue will play next, when it can be read."""
+        js = self._page_js("store_next", None, self._FIND_STORE + self._QUEUE_IDS + """
+          const st = findStore();
+          const q = st ? queueIds(st) : null;
+          return q ? q.next : null;
+        """)
+        res = self.evaluate(js)
+        return str(res) if res else None
+
     def press(self, control: str) -> bool:
         if control not in ("play", "pause", "next", "previous"):
             raise ValueError(control)

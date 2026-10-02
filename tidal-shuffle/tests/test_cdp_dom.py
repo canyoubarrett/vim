@@ -158,3 +158,48 @@ def test_late_redirect_is_followed():
     assert out["path"] == "/album/7"
     assert out["results"] == ["pushed", True, "hero", "already"]
     assert out["clicks"] == ["click:hero"]
+
+
+QUEUE_STORE = """
+  const state = {playQueue: {currentIndex: 0, elements: [{mediaItemId: 500}, {mediaItemId: 501}]}};
+  const store = {getState: () => state,
+                 dispatch: (a) => {
+                   window.__dispatched.push(a);
+                   if (a.type === 'playQueue/ADD_NEXT') setTimeout(() => {   // the queue updates a moment later
+                     const q = state.playQueue;
+                     q.elements.splice(q.currentIndex + 1, 0, ...a.payload.mediaItemIds.map(id => ({mediaItemId: id})));
+                   }, 100);
+                   return a;
+                 }};
+  document.getElementById('wimp')['__reactContainer$q'] = {child: {memoizedProps: {store}}};
+"""
+
+
+def test_queue_next_is_confirmed_from_tidals_queue():
+    out = run("", [("store_queue_next", "123"), ("store_next_id",)], setup=QUEUE_STORE)
+    assert out["results"] == ["ok", "123"]
+    assert [a["type"] for a in out["dispatched"]] == ["playQueue/ADD_NEXT"]
+
+
+def test_queue_next_is_not_sent_twice():
+    setup = QUEUE_STORE.replace("{mediaItemId: 501}", "{mediaItemId: 123}")
+    out = run("", [("store_queue_next", "123")], setup=setup)
+    assert out["results"] == ["ok"] and out["dispatched"] == []
+
+
+def test_unreadable_queue_is_never_written_to():
+    setup = QUEUE_STORE.replace("currentIndex: 0, elements", "pos: 0, list")
+    out = run("", [("store_queue_next", "123"), ("store_next_id",)], setup=setup)
+    assert out["results"] == ["unreadable", None] and out["dispatched"] == []
+
+
+def test_queue_that_disagrees_with_the_footer_is_not_written_to():
+    footer_link = "document.querySelector('[data-test=footer-player]').innerHTML += '<a href=\"/album/1/track/999\">x</a>';"
+    out = run("", [("store_queue_next", "123")], setup=QUEUE_STORE + footer_link)
+    assert out["results"] == ["unreadable"] and out["dispatched"] == []
+
+
+def test_queue_next_that_does_not_take():
+    setup = QUEUE_STORE.replace("if (a.type === 'playQueue/ADD_NEXT')", "if (false)")
+    out = run("", [("store_queue_next", "123")], setup=setup)
+    assert out["results"] == ["not-next"]

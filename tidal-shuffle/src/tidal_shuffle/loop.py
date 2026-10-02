@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 from .config import AppConfig
@@ -40,6 +43,8 @@ class LoopState:
     generation: int = 0                    # bumps on every track change; stale plans are dropped
     picks_played: int = 0
     tracks_seen: int = 0
+    queue_checked: bool = False            # re-checked near the end that the queued pick is still next
+    last_handoff: Optional[tuple] = None   # (monotonic time, pick) of the latest timed hand-off
 
 
 class ShuffleLoop:
@@ -55,6 +60,7 @@ class ShuffleLoop:
         wall: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         background: bool = False,
+        timing_path: Optional[Path] = None,
     ):
         """``background=True`` plans on a worker thread so a slow source (the
         Spotify app harvest can take 30 s or more) never delays a hand-off."""
@@ -71,6 +77,10 @@ class ShuffleLoop:
         self._announced_idle = False
         self.background = background
         self._closed = False
+        # How long TIDAL takes from "play this" to the song actually sounding,
+        # learned from what macOS reports and kept between runs.
+        self.timing_path = timing_path
+        self.start_delay: Optional[float] = self._load_start_delay()
 
     # -- helpers --------------------------------------------------------------
     def remaining(self, np: Optional[NowPlaying], now: float) -> Optional[float]:
@@ -113,9 +123,65 @@ class ShuffleLoop:
         self.state.picks_played += 1
         self.state.recorded = True
 
+    # -- hand-off timing --------------------------------------------------------
+    def _load_start_delay(self) -> Optional[float]:
+        if self.timing_path is None:
+            return None
+        try:
+            v = float(json.loads(Path(self.timing_path).read_text()).get("start_delay"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+        return v if 0.0 <= v <= 15.0 else None
+
+    def _save_start_delay(self) -> None:
+        if self.timing_path is None or self.start_delay is None:
+            return
+        try:
+            path = Path(self.timing_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"start_delay": round(self.start_delay, 2)}))
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def handoff_lead(self) -> float:
+        """Seconds before the end to start the next song: the configured minimum,
+        or the learned start delay plus a safety margin when that is longer."""
+        cfg = self.config.player
+        lead = cfg.handoff_seconds
+        if cfg.adaptive_handoff and self.start_delay is not None:
+            cap = max(cfg.handoff_seconds, cfg.prepare_seconds - 1.0)
+            lead = max(lead, min(self.start_delay + cfg.handoff_margin, cap))
+        return lead
+
+    def _learn_start_delay(self, np: NowPlaying, now: float) -> None:
+        """Our pick showed up: measure when it really started (from its reported
+        position) against when we asked TIDAL to play it."""
+        st = self.state
+        if st.last_handoff is None:
+            return
+        at, pick = st.last_handoff
+        mine = (np.tidal_id and np.tidal_id == pick.track.id) or \
+            (not np.tidal_id and same_song(np.title, np.artist, pick.track.title, pick.track.artist))
+        if not mine:
+            return
+        st.last_handoff = None
+        pos = np.position_at(self._wall())
+        if pos is None or now - at > 30.0:
+            return
+        sample = min(15.0, max(0.0, (now - pos) - at))
+        old = self.start_delay
+        # Being late is what hurts: adopt a longer delay at once, shorten slowly.
+        self.start_delay = sample if old is None or sample > old else 0.7 * old + 0.3 * sample
+        if old is None or abs(self.start_delay - old) >= 0.25:
+            self.log(f"  TIDAL took {sample:.1f}s to start the song; starting the next one {self.handoff_lead():.1f}s before the end")
+        self._save_start_delay()
+
     # -- state transitions ----------------------------------------------------
     def on_new_track(self, np: NowPlaying, now: float) -> None:
         st = self.state
+        self._learn_start_delay(np, now)
         pos = np.position_at(self._wall()) or 0.0
         was_ours = st.expected is not None and self._matches_expected(np)
         orphan = st.orphaned.pop(np.tidal_id, None) if (np.tidal_id and not was_ours) else None
@@ -161,6 +227,7 @@ class ShuffleLoop:
         st.recorded = False
         st.failed_keys = set()
         st.pending = None
+        st.queue_checked = False
 
     def _compute_plan(self, seed: Seed, anchor: Optional[Seed], recent: list, exclude: Optional[set]) -> Plan:
         try:
@@ -258,9 +325,11 @@ class ShuffleLoop:
         st.handed_off = True
         st.handoff_at = now
         for pick in st.plan.picks:
+            asked = self._clock()
             outcome = self.player.play(pick.track)
             if outcome.ok:
                 self.log(f"▶ playing {pick.track.label()}  via {outcome.method}")
+                st.last_handoff = (asked, pick)
                 st.expected = pick
                 self._record(pick)
                 return True
@@ -362,16 +431,26 @@ class ShuffleLoop:
             self.collect_plan(dry_run=dry_run)
 
         rem = self.remaining(np if tidal_live else None, now)
+        lead = self.handoff_lead()
+        if (st.queued is not None and not st.queue_checked and not dry_run and rem is not None
+                and rem <= max(cfg.prepare_seconds, lead + 2.0)):
+            st.queue_checked = True
+            if not self.player.queue_still_next(st.queued.track):
+                self.log(f"  {st.queued.track.label()} is no longer next in TIDAL's queue; starting it at the end instead")
+                if st.queued.track.id:
+                    st.orphaned[st.queued.track.id] = st.queued
+                st.queued = None
+                st.expected = None
         if st.plan is not None and st.plan.primary is not None and not dry_run and st.queued is None:
             if rem is not None:
-                if st.prepared_id != st.plan.primary.track.id and rem <= cfg.prepare_seconds:
+                if st.prepared_id != st.plan.primary.track.id and rem <= max(cfg.prepare_seconds, lead + 2.0):
                     st.prepared_id = st.plan.primary.track.id
                     if self.player.prepare(st.plan.primary.track):
                         self.log(f"  prepared {st.plan.primary.track.label()} ({rem:.0f}s left)")
                     # Preparing takes time; re-read the clock before deciding on the hand-off.
                     now = self._clock()
                     rem = self.remaining(None, now)
-                if not st.handed_off and rem is not None and rem <= cfg.handoff_seconds:
+                if not st.handed_off and rem is not None and rem <= lead:
                     self.handoff(now)
             elif st.current.duration is None and not st.handed_off and (now - st.started_at) > 20 * 60:
                 self.log("no timing information for 20 minutes; skipping ahead")
@@ -386,7 +465,7 @@ class ShuffleLoop:
             st.expected = None
             st.plan = None
 
-        if rem is not None and rem <= max(cfg.prepare_seconds, 10.0) and st.queued is None:
+        if rem is not None and rem <= max(cfg.prepare_seconds, lead + 2.0, 10.0) and (st.queued is None or not st.queue_checked):
             return cfg.near_end_poll_interval
         return cfg.poll_interval
 

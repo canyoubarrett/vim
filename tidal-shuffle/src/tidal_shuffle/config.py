@@ -104,7 +104,9 @@ class ShuffleConfig:
 @dataclass
 class PlayerConfig:
     nowplaying_backend: str = "auto"
-    handoff_seconds: float = 2.0
+    handoff_seconds: float = 3.0
+    adaptive_handoff: bool = True
+    handoff_margin: float = 1.0
     prepare_seconds: float = 10.0
     poll_interval: float = 2.0
     near_end_poll_interval: float = 0.4
@@ -232,7 +234,9 @@ shuffle:
 
 player:
   nowplaying_backend: auto  # auto | media-control | nowplaying-cli
-  handoff_seconds: 2.0      # start the next song this many seconds before the end
+  handoff_seconds: 3.0      # start the next song at least this many seconds before the end
+  adaptive_handoff: true    # learn how long TIDAL takes to start a song and start earlier if needed
+  handoff_margin: 1.0       # extra seconds on top of the learned start time
   prepare_seconds: 10.0     # open the next song's page this many seconds before the end
   poll_interval: 2.0        # seconds between now-playing checks
   near_end_poll_interval: 0.4
@@ -488,6 +492,7 @@ def _build(data: Mapping) -> AppConfig:
     _fill(cfg.player, data.get("player") or {}, "player", {
         "nowplaying_backend": lambda v, n: _as_choice(v, n, NOWPLAYING_BACKENDS),
         "handoff_seconds": lambda v, n: _as_number(v, n, float, 0, 120),
+        "handoff_margin": lambda v, n: _as_number(v, n, float, 0, 10),
         "poll_interval": lambda v, n: _as_number(v, n, float, 0.2, 60),
         "near_end_poll_interval": lambda v, n: _as_number(v, n, float, 0.1, 10),
         "plan_after_seconds": lambda v, n: _as_number(v, n, float, 0, 600),
@@ -498,6 +503,7 @@ def _build(data: Mapping) -> AppConfig:
         "cdp_port": lambda v, n: int(_as_number(v, n, int, 1024, 65535)),
         "tidal_app": lambda v, n: str(v).strip() or "/Applications/TIDAL.app",
         "auto_relaunch": _as_bool,
+        "adaptive_handoff": _as_bool,
         "luna_port": lambda v, n: int(_as_number(v, n, int, 1, 65535)),
     })
     spotify = dict(_section(data, "spotify"))

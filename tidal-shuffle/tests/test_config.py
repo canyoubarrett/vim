@@ -10,7 +10,7 @@ def test_defaults_without_file():
     cfg = load_config(env={})
     assert cfg.sources == ["spotify-app", "spotify-api", "lastfm", "deezer", "tidal-radio"]
     assert cfg.shuffle.strategy == "weighted"
-    assert cfg.player.handoff_seconds == 2.0
+    assert cfg.player.handoff_seconds == 3.0
     assert cfg.config_path is None
     assert not cfg.spotify.has_api_credentials
     assert not cfg.lastfm.configured

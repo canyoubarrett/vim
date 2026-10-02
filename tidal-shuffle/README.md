@@ -3,7 +3,7 @@
 A smarter shuffle for the **TIDAL macOS app**, powered by the **Spotify app
 on your Mac**. Tidal Shuffle watches what TIDAL is playing, asks Spotify for
 that song's radio, picks the next song from it, finds it on TIDAL and makes
-TIDAL play it a couple of seconds before the current song ends. No Spotify
+TIDAL play it just before the current song ends. No Spotify
 API key or Premium needed: it drives the Spotify desktop app the way you
 would.
 
@@ -70,9 +70,19 @@ tidal-shuffle harvest "Midnight City" "M83"   # try the Spotify engine on any so
 
 Play anything in TIDAL. A few seconds into the song, Tidal Shuffle asks
 Spotify for the song's radio in the background, chooses the next song plus
-two backups, opens it in TIDAL about ten seconds before the end, and starts
-it about two seconds before the end. Skip to something else yourself and it
+two backups, and hands it to TIDAL. Skip to something else yourself and it
 simply follows your choice.
+
+**Timing.** Where TIDAL's own play queue can be used, the pick is put right
+after the current song and TIDAL moves to it by itself, with no gap and
+nothing cut off. Otherwise Tidal Shuffle opens the pick's page about ten
+seconds before the end and starts it just before the end. TIDAL takes a
+moment to start a song, so Tidal Shuffle measures how long that really takes
+on your Mac (from the position macOS reports for the new song) and starts
+that much earlier, plus a second of margin; never less than
+`player.handoff_seconds` (3 s). The measurement is kept in
+`~/.config/tidal-shuffle/timing.json`. If TIDAL still gets to its own next
+song first, the first hand-off of a run may be late; the next ones are not.
 
 ## How the Spotify engine works
 
@@ -150,9 +160,12 @@ on your Mac. If none does, run `tidal-shuffle inspect "Title - Artist"`: it
 opens that song's page and prints what the play logic sees there (paste it
 into a bug report). The selectors are in `src/tidal_shuffle/tidal/cdp.py`.
 
-**Optional, gapless:** with the community mod
-[TidaLuna](https://github.com/Inrixia/TidaLuna) and its API plugin, Tidal
-Shuffle hands each pick to TIDAL's own queue as the *next* track instead.
+**Gapless:** Tidal Shuffle puts each pick in TIDAL's own queue as the
+*next* track when it can read that queue (it checks that the pick really is
+next, and again shortly before the end; if not, it falls back to starting
+the song itself). The community mod
+[TidaLuna](https://github.com/Inrixia/TidaLuna) with its API plugin is used
+for this too when it is installed.
 
 ## Sources
 

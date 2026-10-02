@@ -33,6 +33,10 @@ class World:
         self.prepared = []
         self.stolen_until = None   # wall time until which another app owns now-playing
         self.playing = True
+        self.start_delay = 0.0     # seconds between "play" and the song actually sounding
+        self.pending = None        # (wall time it starts, track)
+        self.fillers = 0           # how often TIDAL auto-advanced to a song we did not pick
+        self.still_next = True
 
     def start(self, title, artist, duration, tidal_id=None):
         self.track = (title, artist, duration, tidal_id)
@@ -43,6 +47,11 @@ class World:
     def available(self):
         return True, ""
     def read(self):
+        if self.pending is not None and self.clock.wall >= self.pending[0]:
+            at, t = self.pending
+            self.pending = None
+            self.start(t.title, t.artist, t.duration or 180, t.id)
+            self.start_wall = at
         if self.track is None:
             return None
         if self.stolen_until is not None and self.clock.wall < self.stolen_until:
@@ -51,7 +60,9 @@ class World:
         elapsed = self.clock.wall - self.start_wall
         if elapsed >= duration:
             # TIDAL auto-advances to an album track we did not choose
+            self.fillers += 1
             self.start("Album Filler", "Someone", 200, "filler")
+            self.start_wall = self.start_wall - (elapsed - duration)
             return self.read()
         return NowPlaying(title, artist, duration=duration, elapsed=elapsed, timestamp=self.clock.wall,
                           playing=self.playing, bundle_id=TIDAL_BUNDLE_ID, tidal_id=tid)
@@ -64,13 +75,18 @@ class World:
     def queue_next(self, track):
         self.queued = track
         return True
+    def queue_still_next(self, track):
+        return self.still_next
     def prepare(self, track):
         self.prepared.append(track.id)
         return True
     def play(self, track):
         self.played.append(track.id)
         if self.verify:
-            self.start(track.title, track.artist, track.duration or 180, track.id)
+            if self.start_delay:
+                self.pending = (self.clock.wall + self.start_delay, track)
+            else:
+                self.start(track.title, track.artist, track.duration or 180, track.id)
             return PlayOutcome(True, "cdp/row", track.id)
         return PlayOutcome(False, "open-url", None, "opened")
     def press(self, control):
@@ -522,3 +538,69 @@ def test_same_track_by_id_even_if_artist_credit_differs(tmp_path):
     loop._observe(NowPlaying("Collab", "A, B", duration=300, elapsed=6, timestamp=clock.wall, playing=True,
                              bundle_id=TIDAL_BUNDLE_ID), clock.mono)
     assert loop.state.tracks_seen == seen
+
+
+def _run_songs(loop, world, clock, n):
+    """Step until n picks were played (or a safety limit)."""
+    for _ in range(20000):
+        loop.step()
+        clock.sleep(0.4)
+        if len(world.played) >= n and world.pending is None:
+            return
+    raise AssertionError("did not finish")
+
+
+def test_slow_tidal_start_is_learned_and_the_handoff_moves_earlier(tmp_path):
+    many = [Candidate(f"Song {i}", f"Band {i}", score=1 - i / 100, duration=70) for i in range(12)]
+    loop, world, clock, logs, _ = build(tmp_path, many, {"shuffle": {"strategy": "top", "artist_cooldown": 0},
+                                                       "player": {"plan_after_seconds": 1}})
+    loop.timing_path = tmp_path / "timing.json"
+    world.start_delay = 4.0  # TIDAL takes 4 s to start a song; the 3 s default is too late
+    world.start("Seed Song", "Seed Artist", duration=70, tidal_id="seed")
+    _run_songs(loop, world, clock, 1)
+    assert world.fillers == 1                       # the first hand-off was late
+    _run_songs(loop, world, clock, 2)               # by the time the pick shows up, the delay is learned
+    assert 3.5 <= loop.start_delay <= 4.5
+    assert loop.handoff_lead() >= loop.start_delay + 0.9
+    _run_songs(loop, world, clock, 5)
+    assert world.fillers == 1                       # never late again
+    assert any("TIDAL took" in m for m in logs)
+    # remembered for the next run
+    import json
+    assert 3.5 <= json.loads((tmp_path / "timing.json").read_text())["start_delay"] <= 4.5
+    loop2, *_ = build(tmp_path, many)
+    loop2.timing_path = tmp_path / "timing.json"
+    loop2.start_delay = loop2._load_start_delay()
+    assert abs(loop2.handoff_lead() - loop.handoff_lead()) < 0.01
+
+
+def test_fast_tidal_keeps_the_configured_lead(tmp_path):
+    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start_delay = 0.5
+    world.start("Seed Song", "Seed Artist", duration=70, tidal_id="seed")
+    _run_songs(loop, world, clock, 1)
+    loop.step(); clock.sleep(0.4); loop.step()
+    assert world.fillers == 0
+    assert loop.start_delay is not None and loop.start_delay < 1.5
+    assert loop.handoff_lead() == 3.0
+
+
+def test_adaptive_handoff_can_be_turned_off(tmp_path):
+    loop, *_ = build(tmp_path, cands(), {"player": {"adaptive_handoff": False}})
+    loop.start_delay = 6.0
+    assert loop.handoff_lead() == 3.0
+
+
+def test_queued_pick_that_is_no_longer_next_is_started_at_the_end(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    world.still_next = False   # e.g. you added songs to TIDAL's queue yourself
+    world.start("Seed Song", "Seed Artist", duration=60, tidal_id="seed")
+    for _ in range(200):
+        loop.step(); clock.sleep(0.4)
+        if world.played:
+            break
+    assert world.queued.id == "t-Next One"
+    assert world.played == ["t-Next One"]
+    assert any("no longer next" in m for m in logs)
+    assert world.fillers == 0
