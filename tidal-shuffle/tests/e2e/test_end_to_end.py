@@ -272,9 +272,12 @@ def test_full_screen_view_in_a_real_terminal(mac):
         get(port, "/__play?id=101&how=user")
         assert wait_until(lambda: seen("Neon Harbor") and seen("Lyrics · TIDAL"), 15), "no lyrics view"
         assert wait_until(lambda: seen("Ships that never sail"), 10)
+        assert wait_until(lambda: seen("Alter Era") and seen("\u28c0".encode().decode()), 5), "no logo beside the lyrics"
         os.write(master, b"l")
-        assert wait_until(lambda: seen("Alter Era"), 5), "l did not switch to the visualizer"
-        assert wait_until(lambda: seen("\u28c0".encode().decode()), 5)   # braille: the logo is drawn
+        assert wait_until(lambda: seen("l for lyrics"), 5), "l did not switch to the logo alone"
+        os.write(master, b"n")                    # next: never blocks the other keys
+        os.write(master, b" ")
+        assert wait_until(lambda: seen("paused") or seen("could not pause"), 10), "play/pause did not respond"
         os.write(master, b"q")
         assert proc.wait(timeout=20) == 0
     finally:

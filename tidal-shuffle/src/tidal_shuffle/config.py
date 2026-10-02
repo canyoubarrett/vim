@@ -84,7 +84,8 @@ class UiConfig:
     screen: str = "full"          # full: full-screen view while running | plain: scrolling log
     lyrics: bool = True           # look up lyrics for the song playing
     lyrics_sources: list[str] = field(default_factory=lambda: ["tidal", "lrclib"])
-    visualizer: bool = True       # the Alter Era scene when a song has no lyrics
+    visualizer: bool = True       # the floating Alter Era logo next to the lyrics
+    theme: str = "mocha"          # Catppuccin flavor: mocha | macchiato | frappe | latte
     logo_file: str = ""           # an alter-era.txt style file (---BIG--- / ---SMALL--- braille art)
     fps: float = 12.0
 
@@ -307,10 +308,11 @@ deezer:
   enabled: true
 
 ui:
-  screen: full              # full: full-screen view with lyrics while running | plain: scrolling log
+  screen: full              # full: full-screen view with the logo and lyrics | plain: scrolling log
   lyrics: true              # synced lyrics from TIDAL, then LRCLIB (free, no key)
   lyrics_sources: [tidal, lrclib]
-  visualizer: true          # the Alter Era rain and floating logo when a song has no lyrics
+  visualizer: true          # the floating Alter Era logo next to the lyrics
+  theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
   logo_file: ""             # your own ---BIG--- / ---SMALL--- braille art file
   fps: 12
 
@@ -577,6 +579,7 @@ def _build(data: Mapping) -> AppConfig:
         "lyrics": _as_bool,
         "lyrics_sources": lambda v, n: [_as_choice(x, n, ("tidal", "lrclib")) for x in (v if isinstance(v, list) else str(v).split(","))],
         "visualizer": _as_bool,
+        "theme": lambda v, n: _as_choice(str(v).lower().replace("é", "e"), n, ("mocha", "macchiato", "frappe", "latte")),
         "logo_file": lambda v, n: str(v or ""),
         "fps": lambda v, n: _as_number(v, n, float, 1, 30),
     })

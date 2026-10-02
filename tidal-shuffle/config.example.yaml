@@ -87,10 +87,11 @@ deezer:
   enabled: true
 
 ui:
-  screen: full              # full: full-screen view with lyrics while running | plain: scrolling log
+  screen: full              # full: full-screen view with the logo and lyrics | plain: scrolling log
   lyrics: true              # synced lyrics from TIDAL, then LRCLIB (free, no key)
   lyrics_sources: [tidal, lrclib]
-  visualizer: true          # the Alter Era rain and floating logo when a song has no lyrics
+  visualizer: true          # the floating Alter Era logo next to the lyrics
+  theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
   logo_file: ""             # your own ---BIG--- / ---SMALL--- braille art file
   fps: 12
 

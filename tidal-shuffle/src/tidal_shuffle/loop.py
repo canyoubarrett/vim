@@ -45,6 +45,7 @@ class LoopState:
     picks_played: int = 0
     tracks_seen: int = 0
     queue_checked: bool = False            # re-checked near the end that the queued pick is still next
+    skip_requested: bool = False           # "next" was pressed before a pick was ready
     last_handoff: Optional[tuple] = None   # (monotonic time, pick) of the latest timed hand-off
 
 
@@ -241,6 +242,7 @@ class ShuffleLoop:
         st.failed_keys = set()
         st.pending = None
         st.queue_checked = False
+        st.skip_requested = False
 
     def _compute_plan(self, seed: Seed, anchor: Optional[Seed], recent: list, exclude: Optional[set]) -> Plan:
         try:
@@ -465,6 +467,10 @@ class ShuffleLoop:
         if st.current is None:
             return cfg.idle_poll_interval
 
+        if st.skip_requested and not dry_run:     # "next" was pressed: switch as soon as a pick is ready
+            self.collect_plan()
+            self._skip_if_ready()
+
         if st.current.playing is False and not st.handed_off:
             return cfg.poll_interval  # paused: nothing to do until it resumes
 
@@ -472,6 +478,8 @@ class ShuffleLoop:
         if st.plan is None and st.planning is None and (now - st.started_at) >= cfg.plan_after_seconds:
             self.request_plan(dry_run=dry_run)
             self.collect_plan(dry_run=dry_run)
+        if not dry_run:
+            self._skip_if_ready()
 
         rem = self.remaining(np if tidal_live else None, now)
         lead = self.handoff_lead()
@@ -543,17 +551,50 @@ class ShuffleLoop:
         elif command == "playpause":
             self.toggle_pause()
         elif command == "next":
-            if dry_run:
-                self.log("⏭ (dry run: not skipping)")
-            elif self.state.current is None and self.nowplaying.read() is None:
-                self.log("⏭ nothing is playing")
-            else:
-                self.log("⏭ next pick")
-                if not self.skip_now():
-                    self.log("  nothing to skip to yet")
+            self.request_skip(dry_run=dry_run)
         elif command == "previous":
             if not self.player.press("previous"):
                 self.log("⏮ could not go back (TIDAL is not reachable over its debug port)")
+
+    def request_skip(self, dry_run: bool = False) -> None:
+        """Skip to a fresh pick without ever blocking the keys: play the pick that
+        is ready, or choose one in the background and switch when it is ready."""
+        st = self.state
+        if dry_run:
+            self.log("⏭ (dry run: not skipping)")
+            return
+        if st.current is None:
+            self._observe(self.nowplaying.read(), self._clock())
+        if st.current is None:
+            self.log("⏭ nothing is playing")
+            return
+        if st.queued is not None and self.player.press("next"):
+            self.log(f"⏭ skipping to {st.queued.track.label()}")
+            return
+        if st.plan is not None and st.plan.picks:
+            self.log("⏭ next pick")
+            st.queued = None
+            self.handoff(self._clock())
+            return
+        if st.skip_requested:
+            self.log("⏭ still choosing a song…")
+            return
+        st.skip_requested = True
+        self.log("⏭ choosing a song…")
+        self.request_plan()
+        self.collect_plan()
+        self._skip_if_ready()
+
+    def _skip_if_ready(self) -> None:
+        st = self.state
+        if not st.skip_requested or st.planning is not None or st.plan is None:
+            return
+        st.skip_requested = False
+        if st.plan.picks:
+            st.queued = None
+            self.handoff(self._clock())
+        else:
+            self.log("  nothing to skip to")
 
     def toggle_pause(self) -> bool:
         cur = self.state.current

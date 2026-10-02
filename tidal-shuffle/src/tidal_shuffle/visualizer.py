@@ -1,37 +1,21 @@
-"""The Alter Era scene for the TUI: Everforest-aqua digital rain with the logo
-floating over it.
+"""The floating Alter Era logo for the TUI.
 
 The logo is braille art. Each braille character is a 2x4 grid of dots, so the
 art is turned into individual dots once and redrawn every frame after a small
 rotation and a sub-character shift. That gives quarter-row vertical motion and
 a gentle tilt instead of jumping a whole character at a time. The float is a
 slow bob with a faster overtone, a lazy sideways drift, and a tilt that leans
-into the drift; a soft shadow below shrinks and fades as the logo rises.
-
-The rain follows fx_matrix.py: bright heads, trails fading toward the
-background, half-width katakana. It is time based, so it runs at the same
-speed whatever the frame rate, and it comes to rest while the music is paused.
+into the drift; a soft shadow below shrinks and fades as the logo rises, and
+the colour breathes slowly between two theme colours.
 """
 
 from __future__ import annotations
 
 import math
-import random
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 Color = tuple[int, int, int]
-
-GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ0123456789:.=*+<>|╌╎"
-
-# Everforest aqua, as in fx_matrix.py
-BG: Color = (28, 35, 40)
-HEADC: Color = (205, 228, 214)
-RAINC: Color = (126, 184, 150)
-LOGOC: Color = (131, 192, 146)
-LOGO_HI: Color = (167, 219, 178)
-SHADOW: Color = (78, 102, 92)
 
 # braille dot bit -> (dx, dy) inside the 2x4 cell
 _BITS = {0x01: (0, 0), 0x02: (0, 1), 0x04: (0, 2), 0x40: (0, 3),
@@ -39,6 +23,12 @@ _BITS = {0x01: (0, 0), 0x02: (0, 1), 0x04: (0, 2), 0x40: (0, 3),
 _BIT_AT = {v: k for k, v in _BITS.items()}
 
 ASSET = Path(__file__).parent / "assets" / "alter-era.txt"
+
+# Catppuccin Mocha defaults (the TUI passes its theme's colours)
+LOGO: Color = (203, 166, 247)      # mauve
+GLOW: Color = (245, 194, 231)      # pink
+SHADOW: Color = (49, 50, 68)       # surface0
+BG: Color = (30, 30, 46)           # base
 
 
 def lerp(a: Color, b: Color, t: float) -> Color:
@@ -93,32 +83,19 @@ def art_to_dots(art: list[str]) -> list[tuple[float, float]]:
     return [(x - cx, y - cy) for x, y in dots]
 
 
-@dataclass
-class _Drop:
-    x: int
-    head: float          # row of the head (float)
-    speed: float         # rows per second
-    length: int          # trail length
-    wait: float          # seconds before it starts falling again
+class LogoScene:
+    """Renders frames as rows of (char, colour or None) cells."""
 
-
-class AlterEraScene:
-    """Renders frames as rows of (char, color or None) cells."""
-
-    def __init__(self, art_path: Optional[Path] = None, seed: Optional[int] = None):
+    def __init__(self, art_path: Optional[Path] = None, logo: Color = LOGO, glow: Color = GLOW,
+                 shadow: Color = SHADOW, bg: Color = BG):
         big, small = load_art(art_path)
         self.arts = [a for a in (big, small) if a]
         self._dots = {id(a): art_to_dots(a) for a in self.arts}
-        self.rng = random.Random(seed)
-        self._drops: list[_Drop] = []
-        self._glyphs: dict[tuple[int, int], str] = {}
-        self._size = (0, 0)
+        self.logo, self.glow, self.shadow, self.bg = logo, glow, shadow, bg
         self._last_t: Optional[float] = None
-        self._float_t = 0.0      # time the float has been running (keeps going, slower, when paused)
-        self._rain_t = 0.0
+        self._float_t = 0.0      # float time: runs at full speed while playing, slowly while paused
         self.shown_at: Optional[float] = None
 
-    # -- logo --------------------------------------------------------------------
     def _pick_art(self, width: int, height: int):
         """The logo and scale that fit: the big one when it fits at 60% or more."""
         best = None
@@ -134,17 +111,18 @@ class AlterEraScene:
                     best = (art, scale)
         return best
 
-    def logo_pose(self, t: float) -> tuple[float, float, float]:
+    @staticmethod
+    def logo_pose(t: float) -> tuple[float, float, float]:
         """(dx, dy) in dots and tilt in radians at float time t: a buoyant bob."""
         bob = 3.2 * math.sin(2 * math.pi * t / 5.4) + 0.9 * math.sin(2 * math.pi * t / 2.3 + 1.1)
         drift = 4.0 * math.sin(2 * math.pi * t / 9.7) + 1.2 * math.sin(2 * math.pi * t / 4.1 + 0.4)
         # lean into the drift: tilt follows the sideways velocity
-        vel = (4.0 * 2 * math.pi / 9.7) * math.cos(2 * math.pi * t / 9.7)
-        tilt = math.radians(1.6) * (vel / (4.0 * 2 * math.pi / 9.7)) + math.radians(0.6) * math.sin(2 * math.pi * t / 3.7)
+        lean = math.cos(2 * math.pi * t / 9.7)
+        tilt = math.radians(1.6) * lean + math.radians(0.6) * math.sin(2 * math.pi * t / 3.7)
         return drift, bob, tilt
 
     def _logo_cells(self, width: int, height: int, t: float) -> tuple[dict, float, tuple]:
-        """Braille cells of the logo for this frame, plus how high it floats (0..1)
+        """Braille cells of the logo for this frame, how high it floats (0..1),
         and its footprint (left, right, bottom) in cells for the shadow."""
         pick = self._pick_art(width, height)
         if pick is None:
@@ -172,96 +150,34 @@ class AlterEraScene:
         rise = (3.2 + 0.9 - dy) / (2 * (3.2 + 0.9))   # 1 at the top of the bob, 0 at the bottom
         return cells, rise, (min_c, max_c, max_r)
 
-    # -- rain ----------------------------------------------------------------------
-    def _reset_rain(self, width: int, height: int) -> None:
-        self._drops = []
-        for x in range(width):
-            if self.rng.random() < 0.55:
-                self._drops.append(_Drop(x, self.rng.uniform(-height, height), self.rng.uniform(5.0, 16.0),
-                                         self.rng.randint(5, max(6, height // 2)), 0.0))
-        self._glyphs = {}
-        self._size = (width, height)
-
-    def _advance_rain(self, dt: float, width: int, height: int) -> None:
-        for d in self._drops:
-            if d.wait > 0:
-                d.wait -= dt
-                continue
-            d.head += d.speed * dt
-            if d.head - d.length > height:
-                d.head = self.rng.uniform(-6, -1)
-                d.speed = self.rng.uniform(5.0, 16.0)
-                d.length = self.rng.randint(5, max(6, height // 2))
-                d.wait = self.rng.uniform(0.0, 2.5)
-        # a few trail glyphs flicker
-        for _ in range(max(1, width // 6)):
-            self._glyphs.pop((self.rng.randrange(max(1, height)), self.rng.randrange(max(1, width))), None)
-
-    def _glyph(self, row: int, col: int) -> str:
-        g = self._glyphs.get((row, col))
-        if g is None:
-            g = self.rng.choice(GLYPHS)
-            self._glyphs[(row, col)] = g
-        return g
-
-    # -- frame -----------------------------------------------------------------------
-    def frame(self, width: int, height: int, now: float, playing: bool = True, logo: bool = True,
-              dim: float = 1.0) -> list[list[tuple[str, Optional[Color]]]]:
-        """One frame: ``height`` rows of ``width`` (char, color) cells. ``logo=False``
-        and a ``dim`` below 1 give a quiet backdrop (behind the lyrics)."""
+    def frame(self, width: int, height: int, now: float, playing: bool = True) -> list[list[tuple[str, Optional[Color]]]]:
+        """One frame: ``height`` rows of ``width`` (char, colour) cells."""
         width, height = max(1, width), max(1, height)
-        if (width, height) != self._size:
-            self._reset_rain(width, height)
         dt = 0.0 if self._last_t is None else max(0.0, min(0.5, now - self._last_t))
         self._last_t = now
         if self.shown_at is None:
             self.shown_at = now
-        rain_dt = dt if playing else 0.0                  # the rain rests while paused
-        self._rain_t += rain_dt
-        self._float_t += dt if playing else dt * 0.35     # the logo keeps drifting, slowly
-        self._advance_rain(rain_dt, width, height)
+        self._float_t += dt if playing else dt * 0.35     # paused: it keeps drifting, slowly
 
         grid: list[list[tuple[str, Optional[Color]]]] = [[(" ", None)] * width for _ in range(height)]
-        for d in self._drops:
-            if d.wait > 0:
-                continue
-            head = int(d.head)
-            for k in range(d.length + 1):
-                row = head - k
-                if 0 <= row < height:
-                    if k == 0:
-                        color = HEADC
-                    else:
-                        color = lerp(BG, RAINC, (1 - k / (d.length + 1)) * 0.85)
-                    if dim < 1.0:
-                        color = lerp(BG, color, dim)
-                    grid[row][d.x] = (self._glyph(row, d.x), color)
-        if not logo:
-            return grid
-
         cells, rise, (left, right, bottom) = self._logo_cells(width, height, self._float_t)
-        fade = smoothstep((now - self.shown_at) / 1.6)   # the logo fades up, like the outro
-        if cells:
-            # soft shadow on the "floor": wider and darker when the logo is low
-            floor = min(height - 1, bottom + 2)
-            half = max(2, int((right - left) / 2 * (0.62 - 0.12 * rise)))
-            mid = (left + right) // 2
-            shade = lerp(BG, SHADOW, (0.9 - 0.45 * rise) * fade)
-            for col in range(mid - half, mid + half + 1):
-                if 0 <= col < width and 0 <= floor < height:
-                    edge = abs(col - mid) / max(1, half)
-                    grid[floor][col] = ("▁" if edge > 0.7 else "▂", lerp(BG, shade, 1.15 - edge))
-            glow = 0.5 + 0.5 * math.sin(2 * math.pi * self._float_t / 4.8)
-            color = lerp(BG, lerp(LOGOC, LOGO_HI, glow * 0.6), fade)
-            # the logo is solid: the rain passes behind it, not through it
-            spans: dict[int, list[int]] = {}
-            for (row, col) in cells:
-                lo_hi = spans.setdefault(row, [col, col])
-                lo_hi[0], lo_hi[1] = min(lo_hi[0], col), max(lo_hi[1], col)
-            for row, (lo, hi) in spans.items():
-                for col in range(lo, hi + 1):
-                    if fade > 0.5 or self.rng.random() < fade * 2:
-                        grid[row][col] = (" ", None)
-            for (row, col), bits in cells.items():
-                grid[row][col] = (chr(0x2800 + bits), color)
+        if not cells:
+            return grid
+        fade = smoothstep((now - self.shown_at) / 1.6)   # the logo fades up
+        # soft shadow on the "floor": wider and darker when the logo is low
+        floor = min(height - 1, bottom + 2)
+        half = max(2, int((right - left) / 2 * (0.62 - 0.12 * rise)))
+        mid = (left + right) // 2
+        shade = lerp(self.bg, self.shadow, (1.0 - 0.4 * rise) * fade)
+        for col in range(mid - half, mid + half + 1):
+            if 0 <= col < width and 0 <= floor < height:
+                edge = abs(col - mid) / max(1, half)
+                grid[floor][col] = ("▁" if edge > 0.7 else "▂", lerp(self.bg, shade, 1.2 - edge))
+        glow = 0.5 + 0.5 * math.sin(2 * math.pi * self._float_t / 4.8)
+        color = lerp(self.bg, lerp(self.logo, self.glow, glow * 0.45), fade)
+        for (row, col), bits in cells.items():
+            grid[row][col] = (chr(0x2800 + bits), color)
         return grid
+
+
+AlterEraScene = LogoScene  # the earlier name

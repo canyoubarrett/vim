@@ -225,11 +225,11 @@ def run(dry_run, once, plain, **kwargs):
 
 
 def _make_screen(cfg: AppConfig, rt, loop):
-    """The full-screen view: lyrics service, Alter Era scene, log panel."""
+    """The full-screen view: lyrics service, floating logo, log panel."""
     from . import paths
     from .lyrics import LrclibLyrics, LyricsService, TidalLyrics
     from .tui import ShuffleTUI
-    from .visualizer import AlterEraScene
+    from .visualizer import LogoScene
 
     lyrics = None
     if cfg.ui.lyrics:
@@ -243,7 +243,7 @@ def _make_screen(cfg: AppConfig, rt, loop):
     scene = None
     if cfg.ui.visualizer:
         art = Path(cfg.ui.logo_file).expanduser() if cfg.ui.logo_file else None
-        scene = AlterEraScene(art_path=art)
+        scene = LogoScene(art_path=art)
     return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene)
 
 
@@ -257,7 +257,7 @@ def _start_controls(cfg: AppConfig, loop, screen=None) -> list:
         elif screen is not None:
             screen.toggle_view()
         else:
-            say("lyrics and the visualizer are part of the full-screen view (leave out --plain)")
+            say("the logo and lyrics are part of the full-screen view (leave out --plain)")
 
     started = []
     keys = KeyReader(command) if cfg.player.terminal_keys else None

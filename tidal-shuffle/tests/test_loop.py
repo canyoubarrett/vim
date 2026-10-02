@@ -1,4 +1,5 @@
 """Loop tests with a fake clock, scripted now-playing and a fake player."""
+import time
 
 import random
 
@@ -735,3 +736,50 @@ def test_one_slow_start_does_not_make_every_handoff_early(tmp_path):
     loop._learn_start_delay(np, 109.0)   # one 9 s outlier
     assert loop.start_delay == 2.0
     assert loop.handoff_lead() == 3.0
+
+
+def test_next_key_never_blocks_the_other_keys_while_a_pick_is_chosen(tmp_path):
+    """A slow plan (a Spotify harvest) runs in the background; play/pause still works meanwhile."""
+    import threading
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    loop.background = True
+    release = threading.Event()
+    real_plan = loop.engine.plan
+    def slow_plan(*a, **k):
+        release.wait(5)
+        return real_plan(*a, **k)
+    loop.engine.plan = slow_plan
+    pressed = []
+    orig_press = world.press
+    world.press = lambda c: pressed.append(c) or orig_press(c)
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    loop.step()                      # sees the song; plans only after plan_after_seconds
+    loop.post("next")
+    loop.post("playpause")
+    t0 = time.monotonic()
+    loop.handle_commands()
+    assert time.monotonic() - t0 < 1.0          # did not wait for the plan
+    assert pressed == ["pause"]                  # play/pause went through at once
+    assert loop.state.skip_requested and any("choosing a song" in m for m in logs)
+    loop.post("next")
+    loop.handle_commands()
+    assert any("still choosing" in m for m in logs)   # no second plan
+    release.set()
+    for _ in range(100):
+        loop.step()
+        if world.played:
+            break
+        time.sleep(0.02)
+    assert world.played == ["t-Next One"]       # switched once the pick was ready (even while paused)
+    assert not loop.state.skip_requested
+
+
+def test_next_key_plays_a_ready_pick_at_once(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(12):
+        loop.step(); clock.sleep(1)
+    assert loop.state.plan is not None
+    loop.post("next")
+    loop.handle_commands()
+    assert world.played == ["t-Next One"]
