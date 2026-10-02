@@ -129,10 +129,28 @@ const json = (res, code, body) => {
   res.end(JSON.stringify(body));
 };
 
-const server = http.createServer((req, res) => {
+const readBody = (req) => new Promise((resolve) => {
+  let data = "";
+  req.on("data", (c) => (data += c));
+  req.on("end", () => resolve(data));
+});
+const norm = (s) => (s || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${port}`);
   const q = Object.fromEntries(url.searchParams);
+  const body = req.method === "POST" ? await readBody(req) : "";
   try {
+    if (url.pathname === "/lb/spotify-id-from-metadata/json") {
+      // ListenBrainz stand-in: [{artist_name, release_name, track_name}] -> spotify_track_ids
+      const rows = JSON.parse(body || "[]");
+      log(`listenbrainz lookup ${JSON.stringify(rows)}`);
+      return json(res, 200, rows.map((r) => {
+        const hit = catalog.tracks.find((t) => t.spotify && norm(t.title) === norm(r.track_name) &&
+                                              norm(t.artist).startsWith(norm(r.artist_name).split(" ")[0]));
+        return { ...r, spotify_track_ids: hit ? [hit.spotify] : [] };
+      }));
+    }
     if (url.pathname === "/json/version")
       return json(res, 200, { Browser: "Chrome/120.0.0.0", "Protocol-Version": "1.3", "User-Agent": "TIDAL/2.43 Electron" });
     if (url.pathname === "/json" || url.pathname === "/json/list")

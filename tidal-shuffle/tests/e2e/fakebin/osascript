@@ -33,7 +33,9 @@ if "on harvest(" in script:
     rest = re.sub(r'"[^"]*"', "", call).strip(" ,)\n").split(",")
     nums = [x.strip() for x in rest if x.strip()]
     seed, station = strings[0], strings[1]
-    wanted, mute, restore, use_station = int(nums[0]), nums[5] == "true", nums[6] == "true", nums[7].rstrip(")") == "true"
+    # harvest(seedURI, stationURI, wanted, stepTicks, adTicks, budgetTicks, skipDelay, origVol, muteIt, restoreIt, useStation)
+    wanted, orig_volume = int(nums[0]), int(nums[5])
+    mute, restore, use_station = nums[6] == "true", nums[7] == "true", nums[8].rstrip(")") == "true"
     log("osascript", f"harvest seed={seed} wanted={wanted} station={use_station}")
     if not sp.get("running"):
         fail("Spotify got an error: Application isn't running.", -600)
@@ -43,18 +45,19 @@ if "on harvest(" in script:
     meta = {t["spotify"]: t for t in cat["tracks"] if t.get("spotify")}
     meta.update({t["spotify"]: t for t in cat.get("spotify_only", [])})
     state = tidal("/__state") or {"playedCount": -1}
-    prev_volume = sp.get("volume", 64)
+    prev_volume = orig_volume if orig_volume >= 0 else sp.get("volume", 64)
     sp.update(playing=True, elected=True, elected_at_played=state["playedCount"], title="(harvest)", artist="")
     if mute:
         sp["volume"] = 0
     save_spotify_state(sp)
     time.sleep(1.2)  # skipping through the station takes a moment
-    lines = []
+    seed_track = meta.get(sid, {})
+    lines = [US.join(["SEED", seed, seed_track.get("spotify_title", seed_track.get("title", "")), seed_track.get("artist", "")])]
     for s in playlist[:wanted]:
         t = meta[s]
         lines.append(US.join([f"spotify:track:{s}", t.get("spotify_title", t["title"]), t["artist"], t.get("album", ""),
                               str(int(t["duration"] * 1000)), str(t.get("popularity", 50)), t["artist"]]))
-    if not lines:
+    if len(lines) == 1:
         lines.append("ERR" + US + "no-advance")
     sp.update(playing=False, title=meta.get(playlist[-1], {}).get("title", "") if playlist else "")
     if restore:
@@ -66,6 +69,15 @@ if "on harvest(" in script:
 if 'is running) then return "not-running"' in script:
     if not sp.get("running"):
         print("not-running")
+        sys.exit(0)
+    if "return {tid, tn, ta, ps} as text" in script:
+        print(US.join(["spotify:track:userprev", "Something Of Mine", "Me", "playing" if sp.get("playing") else "paused"]))
+        sys.exit(0)
+    if "set sound volume to 0" in script and "pause" not in script:
+        log("osascript", "mute")
+        sp["volume"] = 0
+        save_spotify_state(sp)
+        print("ok")
         sys.exit(0)
     if "return {ps, vol, tid} as text" in script:
         log("osascript", "spotify state")

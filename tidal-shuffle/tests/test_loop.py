@@ -357,3 +357,29 @@ def test_planner_exception_becomes_a_note(tmp_path):
     loop.step()
     assert loop.state.plan is not None and any("engine exploded" in n for n in loop.state.plan.notes)
     loop.close()
+
+
+def test_songs_you_started_are_not_picked_again(tmp_path):
+    # The radio for the first pick contains the song you started with.
+    class Radio:
+        name = "lastfm"
+        def available(self): return True, ""
+        def candidates(self, seeds, limit):
+            if seeds[0].title == "Seed Song":
+                return [Candidate("Next One", "Band A", score=0.9, duration=30, source="lastfm")]
+            return [Candidate("Seed Song", "Seed Artist", score=0.95, duration=30, source="lastfm"),
+                    Candidate("Third", "Band C", score=0.5, duration=30, source="lastfm")]
+    cfg = load_config(overrides={"shuffle": {"strategy": "top", "lookahead": 1, "artist_cooldown": 0, "min_duration": 1}}, env={})
+    clock = Clock()
+    world = World(clock)
+    history = HistoryStore(tmp_path / "h.json")
+    engine = Engine(cfg, [Radio()], FakeCatalog(), history, rng=random.Random(0), log=lambda m: None)
+    loop = ShuffleLoop(cfg, engine, world, world, history, log=lambda m: None,
+                       clock=lambda: clock.mono, wall=lambda: clock.wall, sleep=clock.sleep)
+    world.start("Seed Song", "Seed Artist", duration=30, tidal_id="t-Seed Song")
+    for _ in range(200):
+        loop.step(); clock.sleep(0.5)
+        if len(world.played) >= 2:
+            break
+    assert world.played == ["t-Next One", "t-Third"]
+    assert [e.source for e in history.entries()][:2] == ["tidal", "lastfm"]
