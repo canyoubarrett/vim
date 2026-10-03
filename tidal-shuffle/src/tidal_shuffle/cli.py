@@ -824,6 +824,23 @@ def update():
 
 
 @cli.command()
+@click.option("--dest", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Folder to put the app in (default /Applications, or ~/Applications).")
+@click.option("--terminal", default="Terminal", show_default=True,
+              help="The terminal app to open the view in, e.g. iTerm or Ghostty.")
+@click.option("--preset", "-p", default=None, help="Start the app with this preset.")
+def app(dest, terminal, preset):
+    """Make Tidal Shuffle.app: the full-screen view, opened from the Dock or Spotlight."""
+    from .macapp import build_app
+
+    args = ["--preset", preset] if preset else []
+    path = build_app(dest, terminal=terminal, args=args)
+    console.print(f"[green]made[/green] {escape(str(path))}")
+    console.print("[dim]Open it from Spotlight or Launchpad, or drag it to the Dock. "
+                  "It opens the full-screen view in " + escape(terminal) + ".[/dim]")
+
+
+@cli.command()
 def colors():
     """Show which colours this terminal can display, to pick ui.color."""
     import sys as _sys

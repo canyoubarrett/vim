@@ -44,6 +44,13 @@ command into Homebrew's `bin`. Run it again after pulling updates. macOS
 has no `pip` command, so use the installer, or a venv and
 `python3 -m pip install -e .` if you prefer to do it by hand.
 
+**The app.** `install.sh` also makes **Tidal Shuffle.app** (in `/Applications`, or
+`~/Applications`), with the Alter Era mark as its icon: open it from Spotlight or
+Launchpad, or keep it in the Dock, and it starts the full-screen view in a Terminal
+window. `tidal-shuffle app` makes it again; `--terminal iTerm` (or Ghostty, WezTerm)
+opens it there instead, and `--preset NAME` starts it with a preset. The app runs
+this installed copy, so `tidal-shuffle update` keeps it current.
+
 `tidal-shuffle config init` writes an optional config file to
 `~/.config/tidal-shuffle/config.yaml`.
 

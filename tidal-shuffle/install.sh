@@ -53,6 +53,8 @@ ln -sf "$here/.venv/bin/tidal-shuffle" "$bindir/tidal-shuffle"
 say "Linked $bindir/tidal-shuffle"
 
 say "Installed: $("$here/.venv/bin/tidal-shuffle" --version)"
+# Tidal Shuffle.app, for the Dock and Spotlight (opens the view in Terminal)
+"$here/.venv/bin/tidal-shuffle" app || say "Could not make Tidal Shuffle.app (run \`tidal-shuffle app\` later)"
 # Is the `tidal-shuffle` your shell finds this one? (An older copy elsewhere on
 # PATH, e.g. from pipx or another folder, would keep running the old code.)
 found="$(command -v tidal-shuffle || true)"
