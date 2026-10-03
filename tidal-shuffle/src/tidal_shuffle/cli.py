@@ -863,6 +863,42 @@ def colors():
     out.flush()
 
 
+@cli.group()
+def backdrops():
+    """Pictures to show behind the logo (Esc → Logo backdrop)."""
+
+
+@backdrops.command("add")
+@click.argument("sources", nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
+def backdrops_add(sources):
+    """Copy pictures, folders of pictures or zips of pictures into the backdrops folder."""
+    from .stages import add_backdrops, backdrop_dir
+
+    n = add_backdrops(list(sources), log=lambda m: console.print(m, markup=False))
+    console.print(f"added {n} picture{'s' if n != 1 else ''} to {backdrop_dir()}", markup=False)
+    if n:
+        console.print("pick one in `tidal-shuffle run`: Esc → Logo backdrop (←→ jumps to it)", markup=False)
+
+
+@backdrops.command("list")
+def backdrops_list():
+    """The pictures in the backdrops folder."""
+    from .stages import backdrop_dir, label, list_backdrops
+
+    names = list_backdrops()
+    for n in names:
+        console.print(f"{label(n):<12} {n}", markup=False, highlight=False)
+    console.print(f"{len(names)} in {backdrop_dir()}", markup=False)
+
+
+@backdrops.command("path")
+def backdrops_path():
+    """Where the pictures are kept."""
+    from .stages import backdrop_dir
+
+    console.print(str(backdrop_dir()), markup=False)
+
+
 @cli.command()
 @click.option("--config", "config_path", type=click.Path(path_type=Path))
 def doctor(config_path):

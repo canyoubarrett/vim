@@ -116,6 +116,9 @@ ui:
   lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
   lyrics_ahead: hide        # lines not sung yet: hide | dim | show
   party: false              # party mode: the logo cycles through every colour and motion
+  logo_backdrop: "off"      # behind the logo: off | cover | random | a picture's file name
+                            # (`tidal-shuffle backdrops add` puts pictures in ~/.config/tidal-shuffle/backdrops)
+  backdrop_dim: 0.45        # how far the picture is dimmed, so the logo stands out (0 to 0.9)
   shuffle_view: "off"       # watch the next song being chosen: off | logo | side  (t toggles)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-KEYS = ("theme", "logo_style", "logo_motion", "rain", "lyrics_lead", "lyrics_ahead", "shuffle_view", "party")
+KEYS = ("theme", "logo_style", "logo_motion", "rain", "lyrics_lead", "lyrics_ahead", "shuffle_view", "party", "logo_backdrop")
 
 
 def load(path: Optional[Path]) -> dict:

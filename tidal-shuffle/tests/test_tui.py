@@ -264,8 +264,9 @@ def test_clicking_a_preset_and_the_key_chips():
     out, _ = render(tui, 120, 40)
     y, x = find_row(out, " n  next ")
     tui.handle_input(f"click:{x + 2}:{y + 1}")
-    y, x = find_row(out, "flow: ")
-    tui.handle_input(f"click:{x + 1}:{y + 1}")
+    last = out.splitlines()[-1]
+    y, x = len(out.splitlines()) - 1, last.index(" f ")
+    tui.handle_input(f"click:{x + 2}:{y + 1}")
     tui.handle_input("click:1:2")                        # nothing there: ignored
     assert posted == ["preset:wind-down", "next", "flow"]
 
@@ -944,3 +945,52 @@ def test_party_setting_drives_the_logo():
     tui.apply_setting(on - 1)
     frame()
     assert not tui.scene.party_colors and tui.scene.motion == "float"
+
+
+def test_logo_backdrop_shows_behind_the_logo_and_is_previewed(tmp_path):
+    from PIL import Image
+
+    from tidal_shuffle.stages import StageArt
+
+    Image.new("RGB", (344, 144), (220, 60, 60)).save(tmp_path / "7 - stage.png")
+    tui, frame, clock = stepping_tui(None)
+    tui.stages = StageArt(tmp_path)
+    frame()
+    tui.handle_input("escape")                            # the settings list picks up the picture
+    names = [it[1] for it in tui.setting_items if it[0] == "logo_backdrop"]
+    assert names == ["off", "cover", "random", "7 - stage.png"]
+    i = next(i for i, it in enumerate(tui.setting_items) if it[1] == "7 - stage.png")
+    while tui.settings_cursor < i:
+        tui.handle_input("right")                         # → jumps a section at a time
+        if tui.setting_items[tui.settings_cursor][0] == "logo_backdrop":
+            break
+    while tui.settings_cursor < i:
+        tui.handle_input("down")
+    assert tui.setting("logo_backdrop") == "7 - stage.png" and tui.chosen("logo_backdrop") == "off"
+    _, svg = render(tui, 120, 40)
+    assert "#" in svg and any(c in svg.lower() for c in ("#783a46", "#7b3b47", "#7c3c48")) or "▀" in render(tui, 120, 40)[0]
+    tui.handle_input("enter")
+    tui.handle_input("escape")
+    out, _ = render(tui, 120, 40)
+    assert tui.config.ui.logo_backdrop == "7 - stage.png" and "▀" in out
+
+
+def test_narrow_window_keeps_up_next_beside_the_log():
+    tui = make_tui(None)
+    pick = tui.loop.state.plan.primary
+    tui.loop.state.plan.picks = [pick]
+    out, _ = render(tui, 100, 34)
+    assert "Up next" in out and "▸ Strangers — Kosheen" in out and "log" in out
+    y, _ = find_row(out, "Up next")
+    assert "log" in out.splitlines()[y]                   # the same row: the log box, split in two
+    wide, _ = render(tui, 150, 40)
+    assert "UP NEXT" not in wide and "RECENTLY PLAYED" in wide   # wide: the card beside the logo instead
+
+
+def test_every_key_stays_on_the_bottom_row_in_a_narrow_window():
+    tui = make_tui(None)
+    for width in (150, 100, 70):
+        out, _ = render(tui, width, 34)
+        last = out.splitlines()[-1]
+        for key in (" space ", " n ", " f ", " p ", " l ", " a ", " t ", " esc ", " q "):
+            assert key in last, (width, key, last)

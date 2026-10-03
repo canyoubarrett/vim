@@ -121,8 +121,9 @@ simply follows your choice.
   `~/.config/tidal-shuffle/cache/lyrics.json`. A song without lyrics gives
   the logo the whole width, and so does `l`; a narrow window gives the
   lyrics the whole width;
-* in a wide window (130 columns or more), an **Up next** card on the right:
-  the pick and its backups with their energy, and what played recently;
+* **Up next**: the pick and its backups with their energy, and what played
+  recently; in a wide window (130 columns or more) as a card on the right,
+  in a narrower one beside the log, which splits in two to make room;
 * at the bottom, the log and a row of key chips, which can be clicked.
 
 Nothing on the screen cuts: when a song ends, a hand-off starts or TIDAL
@@ -166,6 +167,15 @@ section):
   Gruvbox and Gruvbox Light, Tokyo Night and Tokyo Night Storm, Solarized
   Dark and Light, One Dark, Rosé Pine, Rosé Pine Moon and Rosé Pine Dawn,
   Everforest, Kanagawa, Monokai, GitHub Dark;
+* **Logo backdrop** (`ui.logo_backdrop`): a picture behind the logo,
+  dimmed so the logo stands out (`ui.backdrop_dim`), wide ones panning
+  slowly from side to side: the album cover of the song playing (softened),
+  any picture of your own, or a different one of yours with each song. Add
+  pictures (files, folders or zips) with
+  `tidal-shuffle backdrops add ~/Downloads/stages.zip`; they are kept in
+  `~/.config/tidal-shuffle/backdrops` and listed at the end of the settings
+  (`tidal-shuffle backdrops list`). In the settings, ← → jump from section
+  to section;
 * **Party mode** (`ui.party`): the logo glides through every colour scheme,
   each shape a little behind the next so the colours ripple across it, while
   its pieces drift apart and back together and now and then topple;
@@ -430,6 +440,8 @@ pick asked for them.
 | `login [--force]`               | TIDAL device-link login                                   |
 | `presets`                       | list presets                                              |
 | `colors`                        | show which colours this terminal can display              |
+| `backdrops add PATH...`         | add pictures (files, folders, zips) to show behind the logo |
+| `backdrops list`                | list the pictures                                         |
 | `sources --seed "A - B"`        | what every source suggests for a song                     |
 | `history [--clear] [-n N]`      | songs heard and picked                                    |
 | `config init / show / path`     | manage the config file                                    |

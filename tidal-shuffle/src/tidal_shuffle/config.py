@@ -101,6 +101,8 @@ class UiConfig:
     lyrics_lead: float = 0.55     # show the line being sung, and its words, this many seconds early
     lyrics_ahead: str = "hide"    # lines not sung yet: hide | dim | show
     party: bool = False           # party mode: every logo colour and motion, cycling
+    logo_backdrop: str = "off"    # behind the logo: off | cover | random | a picture in ~/.config/tidal-shuffle/backdrops
+    backdrop_dim: float = 0.45    # how far the picture is dimmed towards the background (0..0.9)
     shuffle_view: str = "off"     # the shuffle tree: off | logo (in place of the logo) | side (of Up next)
     glass: float = 0.22           # how much of the rain shows through the panels (0 = none)
     track_poll: float = 0.5       # how often to check for a new song while the screen is up (s)
@@ -383,6 +385,9 @@ ui:
   lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
   lyrics_ahead: hide        # lines not sung yet: hide | dim | show
   party: false              # party mode: the logo cycles through every colour and motion
+  logo_backdrop: "off"      # behind the logo: off | cover | random | a picture's file name
+                            # (`tidal-shuffle backdrops add` puts pictures in ~/.config/tidal-shuffle/backdrops)
+  backdrop_dim: 0.45        # how far the picture is dimmed, so the logo stands out (0 to 0.9)
   shuffle_view: "off"       # watch the next song being chosen: off | logo | side  (t toggles)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up
@@ -683,6 +688,8 @@ def _build(data: Mapping) -> AppConfig:
         "lyrics_lead": lambda v, n: _as_number(v, n, float, -1.0, 3.0),
         "lyrics_ahead": lambda v, n: _as_choice(str(v).lower(), n, ("hide", "dim", "show")),
         "party": _as_bool,
+        "logo_backdrop": lambda v, n: str(v or "off"),
+        "backdrop_dim": lambda v, n: _as_number(v, n, float, 0.0, 0.9),
         "shuffle_view": lambda v, n: _as_choice(str(v).lower(), n, ("off", "logo", "side")),
         "glass": lambda v, n: _as_number(v, n, float, 0.0, 0.6),
         "track_poll": lambda v, n: _as_number(v, n, float, 0.2, 10),

@@ -104,11 +104,17 @@ SETTINGS = [
         (0.8, "Earlier", "if the highlight lags the singing"),
         (1.1, "Earliest", ""),
     ]),
+    # pictures of your own follow these (see stages.py)
+    ("Logo backdrop", "logo_backdrop", [
+        ("off", "Off", ""),
+        ("cover", "Album cover", "the song's cover, softened"),
+        ("random", "A different picture each song", "from your backdrops"),
+    ]),
 ]
 SETTING_ITEMS = [(key, value, label, desc, section) for section, key, values in SETTINGS
                  for value, label, desc in values]
 # settings shown live in the preview while the cursor is on them
-PREVIEWED = ("theme", "party", "logo_style", "logo_motion", "shuffle_view", "rain")
+PREVIEWED = ("theme", "party", "logo_style", "logo_motion", "shuffle_view", "rain", "logo_backdrop")
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # the Alter Era logo's colours, for the title
@@ -498,7 +504,7 @@ class ShuffleTUI:
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
                  theme: Optional[Theme] = None, artwork=None, history=None,
                  post: Optional[Callable[[str], None]] = None,
-                 presets: Optional[Callable[[], dict]] = None, settings_path=None):
+                 presets: Optional[Callable[[], dict]] = None, settings_path=None, stages=None):
         self.loop = loop
         self.config = config
         self.lyrics = lyrics
@@ -508,6 +514,13 @@ class ShuffleTUI:
         self.scene = scene
         ui = getattr(config, "ui", None)
         self.settings_path = settings_path
+        self.stages = stages
+        if self.stages is None:
+            from .stages import StageArt
+
+            self.stages = StageArt(cover=self._cover_image)
+        self.setting_items = list(SETTING_ITEMS)
+        self.refresh_backdrops()
         self._preview: dict = {}          # setting -> value shown while the settings cursor is on it
         self._applied: dict = {}          # what the screen shows now, per previewed setting
         self._theme_from = self._theme_to = self.th
@@ -633,9 +646,23 @@ class ShuffleTUI:
                 self.backdrop.visibility = rain
             self._applied["rain"] = rain
 
+    def refresh_backdrops(self) -> None:
+        """The settings list, with a choice for every picture in the backdrops folder."""
+        from .stages import label
+
+        names = self.stages.names() if self.stages is not None else []
+        self.setting_items = list(SETTING_ITEMS) + [
+            ("logo_backdrop", n, label(n), "", "Logo backdrop") for n in names]
+
+    def _cover_image(self):
+        cur = self.loop.state.current
+        if cur is None or self.artwork is None:
+            return None
+        return self.artwork.get(f"{cur.artist}|{cur.title}", cur.tidal_id, cur.title, cur.artist)
+
     def _preview_cursor(self) -> None:
         """Show the setting under the cursor, live, without choosing it yet."""
-        key, value = SETTING_ITEMS[self.settings_cursor][:2]
+        key, value = self.setting_items[self.settings_cursor][:2]
         self._preview = {key: value} if key in PREVIEWED else {}
 
     def is_current(self, key: str, value) -> bool:
@@ -646,7 +673,8 @@ class ShuffleTUI:
 
     def open_settings(self) -> None:
         self.menu_open = False
-        cur = next((i for i, it in enumerate(SETTING_ITEMS) if self.is_current(it[0], it[1])), 0)
+        self.refresh_backdrops()
+        cur = next((i for i, it in enumerate(self.setting_items) if self.is_current(it[0], it[1])), 0)
         self.settings_cursor = cur
         self.settings_open = True
         self._preview = {}
@@ -659,9 +687,9 @@ class ShuffleTUI:
         """Apply one choice of the settings menu, at once, and remember it."""
         from . import uistate
 
-        if not 0 <= index < len(SETTING_ITEMS):
+        if not 0 <= index < len(self.setting_items):
             return
-        key, value, label, _, section = SETTING_ITEMS[index]
+        key, value, label, _, section = self.setting_items[index]
         ui = getattr(self.config, "ui", None)
         if ui is None:
             return
@@ -761,7 +789,7 @@ class ShuffleTUI:
             self.act("ui:settings")                   # Esc opens and closes the settings
             return True
         if self.settings_open:
-            n = len(SETTING_ITEMS)
+            n = len(self.setting_items)
             if cmd in ("up", "wheel-up"):
                 self.settings_cursor = max(0, self.settings_cursor - 1)
                 self._preview_cursor()
@@ -773,7 +801,16 @@ class ShuffleTUI:
             elif cmd == "quit":
                 self.close_settings()
             elif cmd in ("left", "right"):
-                pass
+                # jump to the previous or next section
+                sections = [i for i, it in enumerate(self.setting_items)
+                            if i == 0 or it[4] != self.setting_items[i - 1][4]]
+                cur = max(i for i in sections if i <= self.settings_cursor)
+                k = sections.index(cur)
+                target = sections[max(0, k - 1)] if cmd == "left" else sections[min(len(sections) - 1, k + 1)]
+                if cmd == "left" and self.settings_cursor != cur:
+                    target = cur
+                self.settings_cursor = target
+                self._preview_cursor()
             else:
                 return False
             return True
@@ -981,8 +1018,25 @@ class ShuffleTUI:
         if self.scene is None:
             return self._panel(Text(""), caption, padding=(0, 0))
         scene = self.scene
-        return self._panel(GridView(lambda w, h: scene.frame(w, h, self._clock(), playing=live)), caption,
-                           padding=(0, 0))
+        choice = self.setting("logo_backdrop") or "off"
+        cur = self.loop.state.current
+        song = f"{cur.artist}|{cur.title}" if cur is not None else ""
+        name = self.stages.pick(choice, song) if self.stages is not None and choice != "off" else None
+        th = self.th
+        dim = float(getattr(getattr(self.config, "ui", None), "backdrop_dim", 0.45))
+        aspect = float(getattr(getattr(self.config, "ui", None), "cell_aspect", 0.5))
+
+        def grid(w: int, h: int) -> list:
+            logo = scene.frame(w, h, self._clock(), playing=live)
+            if not name:
+                return logo
+            art = self.stages.cells(name, w, h, self._clock(), th.bg, dim, aspect,
+                                    key_extra=song if name == "cover" else None)
+            if art is None:
+                return logo
+            from .stages import compose
+            return compose(logo, art)
+        return self._panel(GridView(grid), caption, padding=(0, 0))
 
     def current_trace(self):
         engine = getattr(self.loop, "engine", None)
@@ -1174,7 +1228,8 @@ class ShuffleTUI:
         th, p = self.th, self.th.p
         st = self.loop.state
         text = Text(no_wrap=True, overflow="ellipsis")
-        picks = list(st.plan.picks) if st.plan is not None else []
+        picks = list(getattr(st.plan, "picks", None) or ([st.plan.primary] if getattr(st.plan, "primary", None) else [])) \
+            if st.plan is not None else []
         if not picks:
             text.append("choosing…\n" if st.current is not None else "—\n", style(th.subtle))
         for i, pick in enumerate(picks[:3]):
@@ -1260,7 +1315,7 @@ class ShuffleTUI:
         th, p = self.th, self.th.p
         rows: list = []
         last = None
-        for i, (key, value, label, desc, section) in enumerate(SETTING_ITEMS):
+        for i, (key, value, label, desc, section) in enumerate(self.setting_items):
             if section != last:
                 if rows:
                     rows.append(("gap", None))
@@ -1268,17 +1323,17 @@ class ShuffleTUI:
                 last = section
             rows.append(("item", i))
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append("↑↓ / wheel move · enter / click choose · esc close   ", style(th.faint))
+        text.append("↑↓ move · ←→ section · enter choose · esc close  ", style(th.faint))
         text.append("● ", style(p["green"], True))
         text.append("in use\n\n", style(th.faint))
         room = max(1, height - 4)
-        self.settings_cursor = max(0, min(self.settings_cursor, len(SETTING_ITEMS) - 1))
+        self.settings_cursor = max(0, min(self.settings_cursor, len(self.setting_items) - 1))
         at = rows.index(("item", self.settings_cursor))
         first = min(max(0, at - room // 2), max(0, len(rows) - room))
         if first and rows[first - 1][0] == "label":
             first -= 1
         hits = []
-        name_w = max(len(it[2]) for it in SETTING_ITEMS) + 2
+        name_w = max(len(it[2]) for it in self.setting_items) + 2
         for r, (kind, val) in enumerate(rows[first:first + room]):
             if kind == "gap":
                 text.append("\n")
@@ -1286,7 +1341,7 @@ class ShuffleTUI:
             if kind == "label":
                 text.append(f"  {val.upper()}\n", style(p["overlay1"], True))
                 continue
-            key, value, label, desc, _ = SETTING_ITEMS[val]
+            key, value, label, desc, _ = self.setting_items[val]
             mark = "● " if self.is_current(key, value) else "  "
             if val == self.settings_cursor:
                 text.append(f" ▸{mark}{label.ljust(name_w)}{desc} \n", style(th.current_fg, True, th.current_bg))
@@ -1338,7 +1393,7 @@ class ShuffleTUI:
             self._settings_w = (x, menu_w)               # for the click areas
             out.append((self.settings_panel(height, y), x, y, menu_w, height, op))
             if menu_w < width:                            # a live preview of what the cursor is on
-                key = SETTING_ITEMS[self.settings_cursor][0] if SETTING_ITEMS else ""
+                key = self.setting_items[self.settings_cursor][0] if self.setting_items else ""
                 prev = self.tree_panel("Preview · shuffle tree") if key == "shuffle_view" else self.logo_panel("Preview")
                 out.append((prev, x + menu_w + gap, y, width - menu_w - gap, height, op))
         m = max(0.0, min(1.0, self._menu[0]))
@@ -1362,6 +1417,35 @@ class ShuffleTUI:
         text.append(msg, style(th.past if dim else th.subtle))
         return text
 
+    def up_next_compact(self) -> Panel:
+        """Up next for narrow windows: the pick, its backups, then what played."""
+        th, p = self.th, self.th.p
+        st = self.loop.state
+        picks = list(getattr(st.plan, "picks", None) or ([st.plan.primary] if st.plan is not None and st.plan.primary
+                                                          else [])) if st.plan is not None else []
+        text = Text(no_wrap=True, overflow="ellipsis")
+        if not picks:
+            text.append("choosing…" if st.current is not None else "—", style(th.subtle))
+        for i, pick in enumerate(picks[:3]):
+            if i:
+                text.append("\n")
+            text.append("▸ " if i == 0 else "  ", style(p["mauve"], True))
+            text.append(pick.track.title, style(th.text if i == 0 else th.subtle, i == 0))
+            text.append(f" — {pick.track.artist}", style(p["subtext1"] if i == 0 else th.faint))
+            energy = pick.candidate.extra.get("energy") if pick.candidate.extra else None
+            if i == 0 and energy is not None:
+                text.append("  ")
+                text.append_text(self.meter(energy, 5))
+        recent = self.history.recent(4) if self.history is not None else []
+        cur = st.current
+        for e in reversed(recent):
+            if cur is not None and e.title == cur.title and e.artist == cur.artist:
+                continue
+            text.append("\n")
+            text.append("✓ " if e.source and e.source != "tidal" else "· ", style(p["green"] if e.source and e.source != "tidal" else th.faint))
+            text.append(f"{e.title}", style(th.faint))
+        return self._panel(text, "Up next")
+
     def footer(self, height: int) -> Panel:
         th = self.th
         with self._lock:
@@ -1380,6 +1464,7 @@ class ShuffleTUI:
         text = Text(" ", style(None, False, th.bg))
         x = 1
         hits = []
+        chips = []
         for key, label, action in CHIPS:
             if action == "cmd:flow":
                 label = f"flow: {self.config.shuffle.flow}"
@@ -1387,13 +1472,23 @@ class ShuffleTUI:
                 label = "close presets"
             if action == "ui:settings" and self.settings_open:
                 label = "close settings"
+            chips.append((key, label, action))
+        # in a narrow window: short labels, then keys alone, so every key stays on the row
+        short = {"play/pause": "play", "close presets": "close", "close settings": "close", "settings": "menu"}
+        for spacing, shorten, bare in ((3, False, False), (2, True, False), (1, True, True)):
+            need = 1 + sum(len(f" {k} ") + (0 if bare else len(" " + (short.get(l, l.split(":")[0]) if shorten else l)))
+                           + spacing for k, l, _ in chips)
+            if need <= width:
+                break
+        for key, label, action in chips:
             chip = f" {key} "
-            seg = f" {label}   "
+            label = short.get(label, label.split(":")[0]) if shorten else label
+            seg = (" " * spacing) if bare else f" {label}" + " " * spacing
             if x + len(chip) + len(seg) > width:
                 break
             text.append(chip, style(p["crust"], True, p["mauve"] if action != "cmd:quit" else p["overlay1"]))
             text.append(seg, style(th.subtle, False, th.bg))
-            hits.append((row, x, x + len(chip) + len(seg) - 2, action))
+            hits.append((row, x, x + len(chip) + len(seg) - spacing, action))
             x += len(chip) + len(seg)
         text.append(" " * max(0, width - x), style(None, False, th.bg))
         self._toolbar_hits = hits
@@ -1427,7 +1522,15 @@ class ShuffleTUI:
             body_y = my + HEADER_H + gap
             body_h = max(3, foot_y - gap - body_y)
             out.extend(self.body_regions(mx, body_y, inner, body_h, gap_x))
-            out.append((self.footer(foot), mx, foot_y, inner, foot, 1.0))
+            if inner >= 126 + 4:
+                out.append((self.footer(foot), mx, foot_y, inner, foot, 1.0))
+            else:
+                # no room for the Up next card beside the logo: it shares the log's row instead
+                gap_x = 2 if width >= 100 else 1
+                right = max(28, min(52, int(inner * 0.42)))
+                left = inner - right - gap_x
+                out.append((self.footer(foot), mx, foot_y, left, foot, 1.0))
+                out.append((self.up_next_compact(), mx + left + gap_x, foot_y, right, foot, 1.0))
         out.append((self.toolbar(height - 1, width), 0, height - 1, width, 1, 1.0))
         self._hits = ((self._menu_hits if self.menu_open else []) + (self._settings_hits if self.settings_open else [])
                       + self._toolbar_hits)
