@@ -128,8 +128,8 @@ class StageArt:
             return None
 
     def _base(self, name: str, rows: int, bg: Color, dim: float, key_extra=None):
-        """The picture scaled to a little more than the panel's height (in half
-        blocks), and dimmed towards the background: made once, panned per frame."""
+        """The picture scaled to twice the panel's height in half blocks (room
+        to zoom in), and dimmed towards the background: made once, panned per frame."""
         key = (name, rows, bg, round(dim, 2), key_extra)
         hit = self._bases.get(key)
         if hit is not None:
@@ -139,7 +139,7 @@ class StageArt:
             return None
         from PIL import Image
 
-        h = max(2, rows * 2)
+        h = max(2, rows * 4)
         w = max(2, int(src.width * h / src.height))
         img = src.resize((w, h), Image.LANCZOS)
         if dim > 0:
@@ -149,27 +149,63 @@ class StageArt:
         self._bases[key] = img
         return img
 
+    def _fill(self, base, key, width: int, height: int, bg: Color):
+        """The picture blurred to fill the whole panel: what shows around it
+        when it is zoomed out further than the panel (instead of bars)."""
+        fkey = (key, width, height, "fill")
+        hit = self._bases.get(fkey)
+        if hit is not None:
+            return hit
+        from PIL import Image, ImageFilter
+
+        W, H = width, height * 2
+        scale = max(W / base.width, H / base.height)
+        cw, ch = W / scale, H / scale
+        box = _clamp(((base.width - cw) / 2, (base.height - ch) / 2, (base.width + cw) / 2, (base.height + ch) / 2),
+                     base.width, base.height)
+        img = base.resize((max(1, W), max(1, H)), Image.BILINEAR, box=box).filter(ImageFilter.GaussianBlur(2.5))
+        img = Image.blend(img, Image.new("RGB", img.size, bg), 0.45)
+        self._bases[fkey] = img
+        return img
+
     def cells(self, name: str, width: int, height: int, now: float, bg: Color, dim: float = 0.5,
-              cell_aspect: float = 0.5, key_extra=None) -> Optional[list]:
-        """``height`` rows of ``width`` (top, bottom) colour pairs, or None."""
+              cell_aspect: float = 0.5, key_extra=None, zoom: float = 1.0) -> Optional[list]:
+        """``height`` rows of ``width`` (top, bottom) colour pairs, or None.
+
+        ``zoom`` 1 fills the panel (cropping the sides of a wide picture, which
+        then pans); below 1 it zooms out, showing more of the picture, with a
+        blurred copy around it; above 1 it zooms in."""
         base = self._base(name, height, bg, dim, key_extra)
         if base is None:
             return None
         from PIL import Image
 
-        # how wide the panel is in picture pixels (a half block is about square)
-        want_w = width * cell_aspect * 2 * (base.height / (height * 2))
-        if want_w >= base.width:
-            crop = (0.0, 0.0, float(base.width), float(base.height))
+        W, H = max(1, width), max(1, height * 2)      # the panel in half-block pixels
+        pa = cell_aspect * 2                           # a half-block pixel's width / height
+        Wb, Hb = base.width, base.height
+        cover = max(H / Hb, W * pa / Wb)               # panel pixels per picture pixel, filling the panel
+        sc = cover * max(0.1, zoom)
+        vis_w, vis_h = min(Wb, W * pa / sc), min(Hb, H / sc)   # how much of the picture shows
+        u = 0.5 - 0.5 * math.cos(2 * math.pi * now / 90.0)     # pan slowly, easing at either end
+        x0 = (Wb - vis_w) * u
+        y0 = (Hb - vis_h) / 2
+        box = _clamp((x0, y0, x0 + vis_w, y0 + vis_h), Wb, Hb)
+        pw, ph = int(round(vis_w * sc / pa)), int(round(vis_h * sc))
+        if pw >= W and ph >= H:
+            img = base.resize((W, H), Image.BILINEAR, box=box)
         else:
-            # pan slowly across a wide picture, easing at either end
-            span = base.width - want_w
-            u = 0.5 - 0.5 * math.cos(2 * math.pi * now / 90.0)
-            x0 = span * u
-            crop = (x0, 0.0, x0 + want_w, float(base.height))
-        img = base.resize((width, height * 2), Image.BILINEAR, box=crop)
+            img = self._fill(base, (name, height, bg, round(dim, 2), key_extra), width, height, bg).copy()
+            part = base.resize((max(1, min(W, pw)), max(1, min(H, ph))), Image.BILINEAR, box=box)
+            img.paste(part, ((W - part.width) // 2, (H - part.height) // 2))
         px = img.load()
         return [[(px[x, 2 * y], px[x, 2 * y + 1]) for x in range(width)] for y in range(height)]
+
+
+def _clamp(box: tuple, w: int, h: int) -> tuple:
+    """A crop box inside the picture (float rounding can put it a hair outside)."""
+    x0, y0, x1, y1 = box
+    x0, y0 = min(max(0.0, x0), w - 1e-3), min(max(0.0, y0), h - 1e-3)
+    return (x0, y0, max(x0 + 1e-3, min(float(w), x1)), max(y0 + 1e-3, min(float(h), y1)))
 
 
 def _avg(a: Color, b: Color) -> Color:

@@ -168,8 +168,11 @@ section):
   Dark and Light, One Dark, Rosé Pine, Rosé Pine Moon and Rosé Pine Dawn,
   Everforest, Kanagawa, Monokai, GitHub Dark;
 * **Logo backdrop** (`ui.logo_backdrop`): a picture behind the logo,
-  dimmed so the logo stands out (`ui.backdrop_dim`), wide ones panning
-  slowly from side to side: the album cover of the song playing (softened),
+  dimmed so the logo stands out, wide ones panning slowly from side to
+  side. Two sliders under **Backdrop look** (← → on them) set the zoom
+  (`ui.backdrop_zoom`: 1 fills the panel, down to 0.3 zooms out to show more
+  of the picture with a soft blurred copy around it, up to 2 zooms in) and
+  how far it is dimmed (`ui.backdrop_dim`). The picture can be: the album cover of the song playing (softened),
   any picture of your own, or a different one of yours with each song. Add
   pictures (files, folders or zips) with
   `tidal-shuffle backdrops add ~/Downloads/stages.zip`; they are kept in

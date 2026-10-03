@@ -994,3 +994,53 @@ def test_every_key_stays_on_the_bottom_row_in_a_narrow_window():
         last = out.splitlines()[-1]
         for key in (" space ", " n ", " f ", " p ", " l ", " a ", " t ", " esc ", " q "):
             assert key in last, (width, key, last)
+
+
+def test_backdrop_zoom_and_dim_sliders(tmp_path):
+    from PIL import Image
+
+    from tidal_shuffle import uistate
+    from tidal_shuffle.stages import StageArt
+
+    Image.new("RGB", (344, 144), (220, 60, 60)).save(tmp_path / "7 - stage.png")
+    tui, frame, clock = stepping_tui(None)
+    tui.stages = StageArt(tmp_path)
+    tui.settings_path = tmp_path / "ui.json"
+    frame()
+    tui.handle_input("escape")
+    zoom = next(i for i, it in enumerate(tui.setting_items) if it[0] == "backdrop_zoom")
+    while tui.settings_cursor < zoom:
+        tui.handle_input("down")
+    assert tui.setting("logo_backdrop") == "7 - stage.png"   # off: a picture is shown to adjust
+    tui.handle_input("left")
+    tui.handle_input("left")
+    assert tui.config.ui.backdrop_zoom == 0.8 and uistate.load(tui.settings_path)["backdrop_zoom"] == 0.8
+    out = frame(10)                                       # once the menu has faded in
+    assert "◂ " in out and "80% ▸" in out and tui.settings_cursor == zoom    # ← → moved the slider, not the section
+    tui.handle_input("down")
+    tui.handle_input("right")
+    assert tui.config.ui.backdrop_dim == 0.5
+    for _ in range(30):
+        tui.adjust_slider("backdrop_zoom", -1)
+    assert tui.config.ui.backdrop_zoom == 0.3                 # stops at the lowest
+
+
+def test_zoomed_out_picture_has_a_blurred_surround(tmp_path):
+    from PIL import Image
+
+    from tidal_shuffle.stages import StageArt
+
+    img = Image.new("RGB", (344, 144), (40, 40, 200))
+    for x in range(0, 344, 40):
+        for y in range(144):
+            img.putpixel((x, y), (250, 250, 250))
+    img.save(tmp_path / "1 - lines.png")
+    art = StageArt(tmp_path)
+    fill = art.cells("1 - lines.png", 40, 20, 0.0, (0, 0, 0), dim=0.0, zoom=1.0)
+    out = art.cells("1 - lines.png", 40, 20, 0.0, (0, 0, 0), dim=0.0, zoom=0.4)
+    assert len(out) == 20 and all(len(r) == 40 for r in out)
+    # zoomed out, more of the picture fits across: more of its white lines show in the middle rows
+    lines = lambda row: sum(1 for t, b in row if min(t) > 120)
+    assert lines(out[10]) >= lines(fill[10])
+    # zoomed out: the top and bottom rows are the soft surround, darker and smoother than the picture
+    assert max(max(t) for t, b in out[0]) < 200 and out[0] != fill[0]

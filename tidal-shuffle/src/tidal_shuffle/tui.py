@@ -104,6 +104,8 @@ SETTINGS = [
         (0.8, "Earlier", "if the highlight lags the singing"),
         (1.1, "Earliest", ""),
     ]),
+    ("Backdrop look", "backdrop_zoom", [("<slider>", "Zoom", "← → zoom out to see more of the picture, or in")]),
+    ("Backdrop look", "backdrop_dim", [("<slider>", "Dim", "← → how far the picture fades back behind the logo")]),
     # pictures of your own follow these (see stages.py)
     ("Logo backdrop", "logo_backdrop", [
         ("off", "Off", ""),
@@ -113,6 +115,8 @@ SETTINGS = [
 ]
 SETTING_ITEMS = [(key, value, label, desc, section) for section, key, values in SETTINGS
                  for value, label, desc in values]
+# settings adjusted with ← →: (lowest, highest, step)
+SLIDERS = {"backdrop_zoom": (0.3, 2.0, 0.1), "backdrop_dim": (0.0, 0.9, 0.05)}
 # settings shown live in the preview while the cursor is on them
 PREVIEWED = ("theme", "party", "logo_style", "logo_motion", "shuffle_view", "rain", "logo_backdrop")
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -664,6 +668,29 @@ class ShuffleTUI:
         """Show the setting under the cursor, live, without choosing it yet."""
         key, value = self.setting_items[self.settings_cursor][:2]
         self._preview = {key: value} if key in PREVIEWED else {}
+        if key in SLIDERS and (self.chosen("logo_backdrop") or "off") == "off":
+            # nothing to zoom or dim yet: show a picture while the slider is adjusted
+            names = self.stages.names() if self.stages is not None else []
+            self._preview = {"logo_backdrop": names[0] if names else "cover"}
+
+    def adjust_slider(self, key: str, direction: int) -> None:
+        """Move a slider setting one step (it applies at once and is remembered)."""
+        from . import uistate
+
+        lo, hi, step = SLIDERS[key]
+        ui = getattr(self.config, "ui", None)
+        if ui is None:
+            return
+        value = float(getattr(ui, key, lo) or 0.0)
+        value = round(min(hi, max(lo, value + direction * step)), 2)
+        setattr(ui, key, value)
+        uistate.save(self.settings_path, {k: getattr(ui, k) for k in uistate.KEYS if hasattr(ui, k)})
+
+    def slider_bar(self, key: str, cells: int = 14) -> str:
+        lo, hi, _ = SLIDERS[key]
+        value = float(getattr(getattr(self.config, "ui", None), key, lo) or 0.0)
+        filled = int(round((value - lo) / (hi - lo) * cells))
+        return "◂ " + "▰" * filled + "▱" * (cells - filled) + f" {value * 100:.0f}% ▸"
 
     def is_current(self, key: str, value) -> bool:
         cur = self.chosen(key)
@@ -691,8 +718,8 @@ class ShuffleTUI:
             return
         key, value, label, _, section = self.setting_items[index]
         ui = getattr(self.config, "ui", None)
-        if ui is None:
-            return
+        if ui is None or key in SLIDERS:
+            return                                    # sliders move with ← →
         setattr(ui, key, value)
         self._preview.pop(key, None)
         self._sync_settings(self._clock())
@@ -800,11 +827,14 @@ class ShuffleTUI:
                 self.apply_setting(self.settings_cursor)
             elif cmd == "quit":
                 self.close_settings()
+            elif cmd in ("left", "right") and self.setting_items[self.settings_cursor][0] in SLIDERS:
+                self.adjust_slider(self.setting_items[self.settings_cursor][0], -1 if cmd == "left" else 1)
             elif cmd in ("left", "right"):
                 # jump to the previous or next section
+                # (the sliders are skipped: on a slider, ← → move the slider)
                 sections = [i for i, it in enumerate(self.setting_items)
-                            if i == 0 or it[4] != self.setting_items[i - 1][4]]
-                cur = max(i for i in sections if i <= self.settings_cursor)
+                            if (i == 0 or it[4] != self.setting_items[i - 1][4]) and it[0] not in SLIDERS]
+                cur = max((i for i in sections if i <= self.settings_cursor), default=0)
                 k = sections.index(cur)
                 target = sections[max(0, k - 1)] if cmd == "left" else sections[min(len(sections) - 1, k + 1)]
                 if cmd == "left" and self.settings_cursor != cur:
@@ -1030,8 +1060,10 @@ class ShuffleTUI:
             logo = scene.frame(w, h, self._clock(), playing=live)
             if not name:
                 return logo
-            art = self.stages.cells(name, w, h, self._clock(), th.bg, dim, aspect,
-                                    key_extra=song if name == "cover" else None)
+            zoom = float(getattr(getattr(self.config, "ui", None), "backdrop_zoom", 1.0) or 1.0)
+            dim_now = float(getattr(getattr(self.config, "ui", None), "backdrop_dim", dim))
+            art = self.stages.cells(name, w, h, self._clock(), th.bg, dim_now, aspect,
+                                    key_extra=song if name == "cover" else None, zoom=zoom)
             if art is None:
                 return logo
             from .stages import compose
@@ -1342,13 +1374,17 @@ class ShuffleTUI:
                 text.append(f"  {val.upper()}\n", style(p["overlay1"], True))
                 continue
             key, value, label, desc, _ = self.setting_items[val]
+            pad = name_w
+            if key in SLIDERS:                          # a short label, so the bar fits
+                desc = self.slider_bar(key) + ("   " + desc if val == self.settings_cursor else "")
+                pad = 8
             mark = "● " if self.is_current(key, value) else "  "
             if val == self.settings_cursor:
-                text.append(f" ▸{mark}{label.ljust(name_w)}{desc} \n", style(th.current_fg, True, th.current_bg))
+                text.append(f" ▸{mark}{label.ljust(pad)}{desc} \n", style(th.current_fg, True, th.current_bg))
             else:
                 text.append("  ")
                 text.append(mark, style(p["green"], True))
-                text.append(label.ljust(name_w), style(th.text, True))
+                text.append(label.ljust(pad), style(th.text, True))
                 text.append(desc + " \n", style(th.subtle))
             x0, mw = getattr(self, "_settings_w", (0, 10_000))
             hits.append((top_row + 1 + 2 + r, x0, x0 + mw, f"set:{val}"))

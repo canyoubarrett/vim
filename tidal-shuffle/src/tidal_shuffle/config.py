@@ -103,6 +103,7 @@ class UiConfig:
     party: bool = False           # party mode: every logo colour and motion, cycling
     logo_backdrop: str = "off"    # behind the logo: off | cover | random | a picture in ~/.config/tidal-shuffle/backdrops
     backdrop_dim: float = 0.45    # how far the picture is dimmed towards the background (0..0.9)
+    backdrop_zoom: float = 1.0    # 1 fills the panel; lower zooms out (more of the picture), higher zooms in
     shuffle_view: str = "off"     # the shuffle tree: off | logo (in place of the logo) | side (of Up next)
     glass: float = 0.22           # how much of the rain shows through the panels (0 = none)
     track_poll: float = 0.5       # how often to check for a new song while the screen is up (s)
@@ -388,6 +389,7 @@ ui:
   logo_backdrop: "off"      # behind the logo: off | cover | random | a picture's file name
                             # (`tidal-shuffle backdrops add` puts pictures in ~/.config/tidal-shuffle/backdrops)
   backdrop_dim: 0.45        # how far the picture is dimmed, so the logo stands out (0 to 0.9)
+  backdrop_zoom: 1.0        # 1 fills the panel; 0.3 to 1 zooms out to show more, up to 2 zooms in
   shuffle_view: "off"       # watch the next song being chosen: off | logo | side  (t toggles)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up
@@ -690,6 +692,7 @@ def _build(data: Mapping) -> AppConfig:
         "party": _as_bool,
         "logo_backdrop": lambda v, n: str(v or "off"),
         "backdrop_dim": lambda v, n: _as_number(v, n, float, 0.0, 0.9),
+        "backdrop_zoom": lambda v, n: _as_number(v, n, float, 0.3, 2.0),
         "shuffle_view": lambda v, n: _as_choice(str(v).lower(), n, ("off", "logo", "side")),
         "glass": lambda v, n: _as_number(v, n, float, 0.0, 0.6),
         "track_poll": lambda v, n: _as_number(v, n, float, 0.2, 10),
