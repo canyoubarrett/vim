@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Protocol, Sequence
+from typing import Any, Callable, Optional, Protocol, Sequence
 
 from .config import AppConfig
 from .history import HistoryStore
@@ -38,6 +40,7 @@ class Plan:
     elapsed: float = 0.0
     flow: str = "radio"
     flow_target: Optional[float] = None     # target energy, when the flow has one
+    trace: Any = None                       # how it was chosen (trace.Trace), for the shuffle tree
 
     @property
     def primary(self) -> Optional[Pick]:
@@ -70,6 +73,7 @@ class Engine:
         self._song_features: dict = {}           # seed key -> Features (the first song's, for steady/soundscape)
         self._last_target: Optional[float] = None
         self.trace = None                        # the live record of the choice being made (trace.Trace)
+        self._local = threading.local()          # the trace this thread's plan records into
 
     # ------------------------------------------------------------------
     def cancel(self) -> None:
@@ -97,7 +101,7 @@ class Engine:
         enough (unless blending); ``everything`` asks the sources not tried yet."""
         shuffle = self.config.shuffle
         pool: list[Candidate] = []
-        tr = self.trace
+        tr = self._tr()
         group = tr.add(None, "asking the other sources" if everything else "sources", "step", status="running") if tr else None
         for i, src in enumerate(self.sources):
             if everything and src.name in plan.sources_tried:
@@ -155,9 +159,9 @@ class Engine:
                 dropped["look-alikes"] += 1
                 continue
             out.append(c)
-        if self.trace:
+        if self._tr():
             why = ", ".join(f"{n} {k}" for k, n in dropped.items() if n)
-            self.trace.add(None, "pool", "step", f"{len(pool)} → {len(out)}" + (f"  (left out: {why})" if why else ""),
+            self._tr().add(None, "pool", "step", f"{len(pool)} → {len(out)}" + (f"  (left out: {why})" if why else ""),
                            "done" if out else "failed")
         return out
 
@@ -168,8 +172,8 @@ class Engine:
         shuffle = self.config.shuffle
         plan.flow = shuffle.flow
         if shuffle.flow == "radio" or self.features is None or not pool:
-            if self.trace and pool:
-                self.trace.add(None, f"flow: {shuffle.flow}", "step",
+            if self._tr() and pool:
+                self._tr().add(None, f"flow: {shuffle.flow}", "step",
                                "the radio's own order" if shuffle.flow == "radio" else "no audio features", "done")
             return {}
         ids = [c.spotify_id for c in pool if c.spotify_id]
@@ -198,8 +202,8 @@ class Engine:
         plan.flow_target = res.target
         if res.note:
             plan.notes.append(res.note)
-        if self.trace:
-            self.trace.add(None, f"flow: {shuffle.flow}", "step", res.note or "", "done")
+        if self._tr():
+            self._tr().add(None, f"flow: {shuffle.flow}", "step", res.note or "", "done")
         return res.fits
 
     def _context(self, seed: Seed) -> PickContext:
@@ -226,7 +230,7 @@ class Engine:
         ordered, note = order_candidates(pool, ctx, self.config.shuffle.strategy, self.rng)
         if note:
             plan.notes.append(note)
-        tr = self.trace
+        tr = self._tr()
         if tr:
             order = tr.add(None, f"order: {self.config.shuffle.strategy}", "step",
                            f"{len(ordered)} songs" + (f" · {note}" if note else ""), "done")
@@ -237,19 +241,55 @@ class Engine:
                        "done")
             look = tr.add(None, "find on TIDAL", "step", status="running")
         wanted = max(1, self.config.shuffle.lookahead)
-        tried = 0
         seen_ids: set[str] = {p.track.id for p in plan.picks}
         allow_repeats = note == "allowing repeats"
-        for cand in ordered:
-            if len(plan.picks) >= wanted:
-                break
-            tried += 1
-            node = tr.add(look, cand.label(), "candidate", "looking…", "running") if tr else None
+        # Look candidates up on TIDAL a few at a time, ahead of where the
+        # choosing is, but take them strictly in order.
+        workers = max(1, int(getattr(self.config.shuffle, "lookup_workers", 4) or 1))
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tidal-lookup") if workers > 1 else None
+        lookups: dict = {}
+
+        def match(cand: Candidate):
             try:
-                track = self.catalog.match(cand)
+                return self.catalog.match(cand)
             except Exception as e:
                 self.log(f"TIDAL match failed for {cand.label()}: {e}")
-                track = None
+                return None
+
+        def start(i: int) -> None:
+            if i < len(ordered) and i not in lookups:
+                cand = ordered[i]
+                node = tr.add(look, cand.label(), "candidate", "looking…", "running") if tr else None
+                lookups[i] = (executor.submit(match, cand) if executor else None, node)
+
+        tried = 0
+        try:
+            tried = self._match_in_order(ordered, plan, ctx, wanted, seen_ids, allow_repeats, lookups, start, match,
+                                         workers, tr)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            for fut, node in lookups.values():
+                if tr and node is not None and node.status == "running":
+                    tr.update(node, detail="not needed", status="skipped")
+        if tr:
+            tr.update(look, detail=f"{tried} looked up, {len(plan.picks)} found", status="done" if plan.picks else "failed")
+        if not plan.picks:
+            plan.notes.append(f"none of {tried} candidates could be found on TIDAL")
+
+    def _match_in_order(self, ordered, plan, ctx, wanted, seen_ids, allow_repeats, lookups, start, match,
+                        workers, tr) -> int:
+        """Take the looked-up candidates in order until there are enough picks;
+        returns how many were looked at."""
+        tried = 0
+        for i, cand in enumerate(ordered):
+            if len(plan.picks) >= wanted:
+                break
+            for j in range(i, i + workers):
+                start(j)
+            tried += 1
+            fut, node = lookups[i]
+            track = fut.result() if fut is not None else match(cand)
             skip = None
             if track is None:
                 skip = "not on TIDAL"
@@ -276,21 +316,29 @@ class Engine:
                                    reason=f"{cand.source} #{cand.rank + 1}, score {cand.score:.2f}"))
             if tried > wanted * 8:
                 break
-        if tr:
-            tr.update(look, detail=f"{tried} looked up, {len(plan.picks)} found", status="done" if plan.picks else "failed")
-        if not plan.picks:
-            plan.notes.append(f"none of {tried} candidates could be found on TIDAL")
+        return tried
 
-    def plan(self, current: Seed, anchor: Optional[Seed] = None, recent: Sequence[Seed] = (),
-             exclude_keys: Optional[set] = None) -> Plan:
-        """Decide what to play after ``current``."""
+    def _tr(self):
+        return getattr(self._local, "trace", None)
+
+    def new_trace(self, current: Seed):
         from .trace import Trace
 
+        shuffle = self.config.shuffle
+        return Trace(f"after {current.label()}", f"{shuffle.flow} · {shuffle.strategy} · seed: {shuffle.seed}")
+
+    def plan(self, current: Seed, anchor: Optional[Seed] = None, recent: Sequence[Seed] = (),
+             exclude_keys: Optional[set] = None, trace=None) -> Plan:
+        """Decide what to play after ``current``. ``trace``: record the choice
+        there instead of in the shuffle tree on show (planning a song ahead)."""
         started = time.monotonic()
         plan = Plan(seed=current)
         shuffle = self.config.shuffle
-        self.trace = tr = Trace(f"after {current.label()}",
-                                f"{shuffle.flow} · {shuffle.strategy} · seed: {shuffle.seed}")
+        tr = trace or self.new_trace(current)
+        if trace is None:
+            self.trace = tr
+        self._local.trace = tr
+        plan.trace = tr
         try:
             current = self.catalog.resolve_seed(current)
             plan.seed = current

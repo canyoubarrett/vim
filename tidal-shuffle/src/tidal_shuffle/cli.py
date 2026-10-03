@@ -376,7 +376,8 @@ def _start_controls(cfg: AppConfig, loop, screen=None) -> list:
             loop.post(cmd)
 
     started = []
-    keys = KeyReader(command) if cfg.player.terminal_keys else None
+    sink = getattr(screen, "text_sink", None) if screen is not None else None
+    keys = KeyReader(command, text_sink=sink) if cfg.player.terminal_keys else None
     if keys is not None and keys.start():
         started.append(keys)
         console.print(f"[dim]keys: {KEY_HELP} · Ctrl+C stops[/dim]")

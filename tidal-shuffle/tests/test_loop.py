@@ -910,3 +910,43 @@ def test_next_with_a_queued_pick_that_is_no_longer_next_starts_it_directly(tmp_p
     loop.request_skip()
     assert "next" not in world.presses
     assert world.played == ["t-Next One"]
+
+
+def test_the_song_after_the_pick_is_chosen_ahead_and_ready_when_the_pick_starts(tmp_path):
+    many = [Candidate(f"Song {i}", f"Band {i}", score=1 - i / 100, duration=200) for i in range(12)]
+    loop, world, clock, logs, _ = build(tmp_path, many, {"shuffle": {"strategy": "top", "artist_cooldown": 0},
+                                                       "player": {"plan_after_seconds": 0}})
+    loop.background = True
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(50):
+        loop.step()
+        if loop.state.ahead is not None and loop.state.ahead.done():
+            break
+        time.sleep(0.01)
+    pick = loop.state.plan.primary
+    ahead = loop.state.ahead
+    assert ahead is not None and ahead.pick_id == pick.track.id and ahead.done()
+    after = ahead.result().primary.track.id
+    assert after != pick.track.id
+    loop.request_skip()                                   # next: the pick starts...
+    loop.step()
+    assert loop.state.current.tidal_id == pick.track.id
+    assert loop.state.plan is not None and loop.state.plan.primary.track.id == after   # ...its next is ready
+    assert loop.engine.trace is ahead.trace
+
+
+def test_a_plan_made_ahead_is_dropped_when_another_song_starts(tmp_path):
+    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"},
+                                                          "player": {"plan_after_seconds": 0}})
+    loop.background = True
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(50):
+        loop.step()
+        if loop.state.ahead is not None and loop.state.ahead.done():
+            break
+        time.sleep(0.01)
+    assert loop.state.ahead is not None
+    world.start("Something Else", "Someone", 200, "else")    # you picked a song in TIDAL yourself
+    loop.step()
+    assert loop.state.ahead is None or loop.state.ahead.pick_id != "t-Next One"
+    assert loop.state.plan is None or loop.state.plan.seed.title == "Something Else"

@@ -140,6 +140,8 @@ class ShuffleConfig:
     allow_seed_artist: bool = False
     seed: str = "current"
     lookahead: int = 3
+    plan_ahead: bool = True           # choose the song after the pick while the pick is still to come
+    lookup_workers: int = 4           # look this many candidates up on TIDAL at once
     min_duration: float = 60.0
     max_duration: float = 900.0
     allow_explicit: bool = True
@@ -310,6 +312,9 @@ shuffle:
   allow_seed_artist: false  # may the next song be by the artist now playing?
   seed: current             # current | anchor | window (see README)
   lookahead: 3              # how many backup picks to keep ready
+  plan_ahead: true          # also choose the song after the pick in the background, so it is ready the
+                            # moment the pick starts (next, next, next never waits)
+  lookup_workers: 4         # look this many candidates up on TIDAL at once (1: one at a time)
   min_duration: 60          # seconds; skips intros/interludes
   max_duration: 900
   allow_explicit: true
@@ -634,6 +639,8 @@ def _build(data: Mapping) -> AppConfig:
         "allow_seed_artist": _as_bool,
         "seed": lambda v, n: _as_choice(v, n, SEED_MODES),
         "lookahead": lambda v, n: int(_as_number(v, n, int, 1, 20)),
+        "plan_ahead": _as_bool,
+        "lookup_workers": lambda v, n: int(_as_number(v, n, int, 1, 16)),
         "min_duration": lambda v, n: _as_number(v, n, float, 0),
         "max_duration": lambda v, n: _as_number(v, n, float, 1),
         "allow_explicit": _as_bool,
@@ -800,6 +807,11 @@ def load_config(
     env = os.environ if env is None else env
     raw, used_path = read_config_file(path)
     raw = _upgrade_legacy(raw)
+    from . import credentials
+
+    saved = credentials.load()                 # entered in the settings menu
+    if saved:
+        raw = deep_merge(raw, {"spotify": saved})
     merged = deep_merge(raw, env_overrides(env))
     presets = all_presets(raw.get("presets") if isinstance(raw.get("presets"), Mapping) else {})
     if preset:

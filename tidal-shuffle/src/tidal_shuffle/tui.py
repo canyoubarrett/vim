@@ -133,6 +133,9 @@ SETTINGS = [
         ("random", "A different picture each song", "from your backdrops"),
     ]),
 ]
+PICTURES = "<pictures>"     # the entry that unfolds your pictures
+EDIT = "<edit>"             # an entry you type into
+ACTION = "<action>"
 SETTING_ITEMS = [(key, value, label, desc, section) for section, key, values in SETTINGS
                  for value, label, desc in values]
 # settings adjusted with ← →: (lowest, highest, step)
@@ -548,6 +551,12 @@ class ShuffleTUI:
             self.stages = StageArt(cover=self._cover_image)
         from .artwork import drawable_details
 
+        self.pictures_open = False        # the settings list shows your pictures one by one
+        self.editing: Optional[str] = None  # the Spotify field being typed into
+        self.edit_text = ""
+        self._spotify_status = ""
+        self._preview_due: Optional[tuple] = None   # (when, preview): a picture shown once the cursor rests
+
         self.details = drawable_details(str(getattr(ui, "block_glyphs", "auto") or "auto"))
         self.setting_items = list(SETTING_ITEMS)
         self.refresh_backdrops()
@@ -656,6 +665,8 @@ class ShuffleTUI:
         themes blend into each other, the logo eases into its new look."""
         from .theme import blend, theme as make
 
+        if self._preview_due is not None and now >= self._preview_due[0]:
+            self._preview, self._preview_due = self._preview_due[1], None
         name = self.setting("theme") or "mocha"
         if self._applied.get("theme") != name:
             if self._applied.get("theme") is not None:
@@ -701,7 +712,33 @@ class ShuffleTUI:
                     item = (key, value, item[2], "quarter blocks, 2×2: the finest solid blocks this terminal "
                             "draws (Ghostty or kitty go finer)", item[4])
             items.append(item)
-        self.setting_items = items + [("logo_backdrop", n, label(n), "", "Logo backdrop") for n in names]
+        # your pictures fold away behind one entry (a long list slows the menu down)
+        chosen = self.chosen("logo_backdrop") or "off"
+        in_use = f" · in use: {label(chosen)}" if chosen in names else ""
+        if names:
+            if self.pictures_open:
+                items.append(("logo_backdrop", PICTURES, f"▾ Your pictures ({len(names)})",
+                              "enter to fold them away" + in_use, "Logo backdrop"))
+                items += [("logo_backdrop", n, "   " + label(n), "", "Logo backdrop") for n in names]
+            else:
+                items.append(("logo_backdrop", PICTURES, f"▸ Your pictures ({len(names)})",
+                              "enter to choose one" + in_use, "Logo backdrop"))
+        self.setting_items = items + self._spotify_items()
+
+    def _spotify_items(self) -> list:
+        """The Spotify API section: the Web API's credentials, typed or pasted in."""
+        from .credentials import mask
+
+        sp = getattr(self.config, "spotify", None)
+        cid = getattr(sp, "client_id", None)
+        secret = getattr(sp, "client_secret", None)
+        return [
+            ("spotify:client_id", EDIT, "Client ID", mask(cid) + " · developer.spotify.com/dashboard → your app",
+             "Spotify API"),
+            ("spotify:client_secret", EDIT, "Client secret", mask(secret) + " · on the same page (View client secret)",
+             "Spotify API"),
+            ("spotify:check", ACTION, "Check", self._spotify_status or "ask Spotify whether they work", "Spotify API"),
+        ]
 
     def _cover_image(self):
         cur = self.loop.state.current
@@ -712,6 +749,16 @@ class ShuffleTUI:
     def _preview_cursor(self) -> None:
         """Show the setting under the cursor, live, without choosing it yet."""
         key, value = self.setting_items[self.settings_cursor][:2]
+        self._preview_due = None
+        if value in (PICTURES, EDIT, ACTION):
+            return
+        if key == "logo_backdrop" and value not in ("off", "cover", "random"):
+            # a picture: shown once the cursor rests on it (loading one takes a moment),
+            # the one before stays up meanwhile
+            before = self._preview.get("logo_backdrop")
+            self._preview_due = (self._clock() + 0.3, {key: value})
+            self._preview = {key: before} if before else {}
+            return
         self._preview = {key: value} if key in PREVIEWED else {}
         if (key in BACKDROP_SLIDERS or key == "picture_detail") and (self.chosen("logo_backdrop") or "off") == "off":
             # nothing to zoom or dim yet: show a picture while the slider is adjusted
@@ -744,6 +791,11 @@ class ShuffleTUI:
         return "◂ " + "▰" * filled + "▱" * (cells - filled) + f" {value * 100:.0f}% ▸"
 
     def is_current(self, key: str, value) -> bool:
+        if value in (EDIT, ACTION):
+            return False
+        if value == PICTURES:
+            names = self.stages.names() if self.stages is not None else []
+            return (self.chosen("logo_backdrop") or "off") in names
         cur = self.chosen(key)
         if isinstance(value, float) and isinstance(cur, (int, float)):
             return abs(cur - value) < 1e-6
@@ -759,6 +811,8 @@ class ShuffleTUI:
 
     def close_settings(self) -> None:
         self.settings_open = False
+        self.editing = None
+        self._preview_due = None
         self._preview = {}                 # what was only previewed goes back to what was chosen
 
     def apply_setting(self, index: int) -> None:
@@ -768,6 +822,18 @@ class ShuffleTUI:
         if not 0 <= index < len(self.setting_items):
             return
         key, value, label, _, section = self.setting_items[index]
+        if value == PICTURES:                         # fold your pictures out, or away
+            self.pictures_open = not self.pictures_open
+            self.refresh_backdrops()
+            self.settings_cursor = next(i for i, it in enumerate(self.setting_items) if it[1] == PICTURES)
+            return
+        if value == EDIT:
+            self.settings_cursor = index
+            self.editing, self.edit_text = key, ""
+            return
+        if key == "spotify:check":
+            self.check_spotify()
+            return
         ui = getattr(self.config, "ui", None)
         if ui is None or key in SLIDERS:
             return                                    # sliders move with ← →
@@ -776,6 +842,83 @@ class ShuffleTUI:
         self._sync_settings(self._clock())
         uistate.save(self.settings_path, {k: getattr(ui, k) for k in uistate.KEYS if hasattr(ui, k)})
         self.log(f"{section}: {label}")
+
+    # -- typing into a field (the Spotify credentials) -------------------------
+    def text_sink(self):
+        """Where typed text goes while a field is being edited (else None)."""
+        return self.text_input if self.editing is not None else None
+
+    def text_input(self, data: str) -> None:
+        """Raw keyboard input for the field being edited: typed or pasted text,
+        Backspace, Ctrl+U (clear), Enter (save), Esc (cancel)."""
+        import re
+
+        data = re.sub(r"\x1b\[[0-9;<>?]*[ -/]*[@-~]", "", data)      # arrows, clicks
+        data = re.sub(r"\x1bO.", "", data)
+        for ch in data:
+            if self.editing is None:
+                return
+            if ch == "\x1b":
+                self.cancel_edit()
+            elif ch in "\r\n":
+                self.finish_edit()
+            elif ch in "\x7f\x08":
+                self.edit_text = self.edit_text[:-1]
+            elif ch == "\x15":
+                self.edit_text = ""
+            elif ch.isprintable():
+                self.edit_text += ch
+
+    def cancel_edit(self) -> None:
+        self.editing, self.edit_text = None, ""
+
+    def finish_edit(self) -> None:
+        """Save the typed value, hand it to the running sources, and check it."""
+        from . import credentials
+
+        key, text = self.editing, self.edit_text.strip()
+        self.cancel_edit()
+        if not key or not key.startswith("spotify:") or not text:
+            return
+        field = key.split(":", 1)[1]
+        sp = getattr(self.config, "spotify", None)
+        if sp is None:
+            return
+        setattr(sp, field, text)
+        values = credentials.load()
+        values[field] = text
+        try:
+            credentials.save(values)
+        except OSError as e:
+            self.log(f"⚠ could not save the Spotify {field.replace('_', ' ')}: {e}")
+            return
+        engine = getattr(self.loop, "engine", None)
+        try:
+            credentials.apply_live(self.config, list(getattr(engine, "sources", []) or []), self.log)
+        except Exception as e:
+            self.log(f"⚠ Spotify API: {e}")
+        self.log(f"Spotify API: {field.replace('_', ' ')} saved")
+        self._spotify_status = ""
+        self.refresh_backdrops()
+        if sp.client_id and sp.client_secret:
+            self.check_spotify()
+
+    def check_spotify(self) -> None:
+        """Ask Spotify, in the background, whether the credentials work."""
+        from . import credentials
+
+        sp = getattr(self.config, "spotify", None)
+        cid, secret = getattr(sp, "client_id", None), getattr(sp, "client_secret", None)
+        self._spotify_status = "asking Spotify…"
+        self.refresh_backdrops()
+
+        def work() -> None:
+            ok, msg = credentials.check(cid or "", secret or "")
+            self._spotify_status = ("✓ " if ok else "⚠ ") + msg
+            self.log(f"Spotify API: {self._spotify_status}")
+            self.refresh_backdrops()
+
+        threading.Thread(target=work, name="tidal-shuffle-spotify-check", daemon=True).start()
 
     def toggle_tree(self) -> None:
         """Show or hide the shuffle tree (t), where it was last shown."""
@@ -863,6 +1006,12 @@ class ShuffleTUI:
         if cmd == "tree":
             self.toggle_tree()
             return True
+        if self.editing is not None:
+            if cmd == "escape":
+                self.cancel_edit()
+            elif cmd == "enter":
+                self.finish_edit()
+            return True                               # typing: the keys are text, not commands
         if cmd == "escape" and not self.menu_open:
             self.act("ui:settings")                   # Esc opens and closes the settings
             return True
@@ -1439,6 +1588,9 @@ class ShuffleTUI:
                 desc = self.slider_bar(key) + ("   " + desc if val == self.settings_cursor else "")
                 pad = 8
             mark = "● " if self.is_current(key, value) else "  "
+            if self.editing == key:
+                shown = self.edit_text if key != "spotify:client_secret" else "•" * len(self.edit_text)
+                desc = (shown[-40:] if len(shown) > 40 else shown) + "█   enter save · esc cancel · ⌘V pastes"
             if val == self.settings_cursor:
                 text.append(f" ▸{mark}{label.ljust(pad)}{desc} \n", style(th.current_fg, True, th.current_bg))
             else:

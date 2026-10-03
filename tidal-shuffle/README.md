@@ -177,9 +177,11 @@ section):
   any picture of your own, or a different one of yours with each song. Add
   pictures (files, folders or zips) with
   `tidal-shuffle backdrops add ~/Downloads/stages.zip`; they are kept in
-  `~/.config/tidal-shuffle/backdrops` and listed at the end of the settings
-  (`tidal-shuffle backdrops list`). In the settings, ← → jump from section
-  to section;
+  `~/.config/tidal-shuffle/backdrops`; in the settings they are folded
+  away behind one entry, **Your pictures**: Enter unfolds them (and folds
+  them away again), and a picture is shown once the cursor rests on it
+  (`tidal-shuffle backdrops list` lists them). In the settings, ← → jump
+  from section to section;
 * **Picture detail** (`ui.picture_detail`), for backdrops and the big cover,
   in steps: Low (half blocks, 1×2 pixels a character), Medium (quarter
   blocks, 2×2), High (sixth blocks, 2×3), Highest (eighth blocks, 2×4: as
@@ -196,6 +198,14 @@ section):
   the same steps (the preview shows the logo filled while you choose);
 * **Logo size** (`ui.logo_size`): the logo on its own, from as big as fits
   down;
+* **Spotify API**: type or paste the client ID and client secret of your
+  Spotify developer app (developer.spotify.com/dashboard → your app →
+  Settings). They are kept in `~/.config/tidal-shuffle/spotify.json`,
+  readable only by you, take effect at once, and are checked with Spotify
+  (the result shows beside **Check**); the secret is never shown. They
+  replace `spotify.client_id` / `client_secret` in the config file; the
+  `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` environment variables still
+  win. While typing, keys are text (Enter saves, Esc cancels, Ctrl+U clears);
 * **Party mode** (`ui.party`): the logo glides through every colour scheme,
   each shape a little behind the next so the colours ripple across it, while
   its pieces drift apart and back together and now and then topple;
@@ -436,6 +446,11 @@ flags too: `--strategy`, `--artist-cooldown`, `--allow-seed-artist`,
   song you started with), `window` (seed from the last few songs; Spotify
   API only)
 * `candidates`, `lookahead`, `min_duration`, `max_duration`, `allow_explicit`
+* `plan_ahead` (on): while the pick is still to come, the song after it is
+  chosen too, in the background, so when the pick starts its own next song
+  is ready at once: pressing next again and again never waits
+* `lookup_workers` (4): candidates are looked up on TIDAL this many at a
+  time (taken strictly in order), instead of one after another
 
 Presets bundle these; pick one with `--preset NAME`, or while running from
 the presets menu (`p`). `tidal-shuffle presets` lists `balanced`, `familiar`,

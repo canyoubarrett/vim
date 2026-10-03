@@ -33,6 +33,9 @@ shuffle:
   allow_seed_artist: false  # may the next song be by the artist now playing?
   seed: current             # current | anchor | window (see README)
   lookahead: 3              # how many backup picks to keep ready
+  plan_ahead: true          # also choose the song after the pick in the background, so it is ready the
+                            # moment the pick starts (next, next, next never waits)
+  lookup_workers: 4         # look this many candidates up on TIDAL at once (1: one at a time)
   min_duration: 60          # seconds; skips intros/interludes
   max_duration: 900
   allow_explicit: true

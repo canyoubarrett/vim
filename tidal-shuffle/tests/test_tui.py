@@ -958,14 +958,20 @@ def test_logo_backdrop_shows_behind_the_logo_and_is_previewed(tmp_path):
     frame()
     tui.handle_input("escape")                            # the settings list picks up the picture
     names = [it[1] for it in tui.setting_items if it[0] == "logo_backdrop"]
-    assert names == ["off", "cover", "random", "7 - stage.png"]
-    i = next(i for i, it in enumerate(tui.setting_items) if it[1] == "7 - stage.png")
-    while tui.settings_cursor < i:
+    assert names == ["off", "cover", "random", "<pictures>"]          # your pictures, folded away
+    folded = next(i for i, it in enumerate(tui.setting_items) if it[1] == "<pictures>")
+    while tui.settings_cursor < folded:
         tui.handle_input("right")                         # → jumps a section at a time
         if tui.setting_items[tui.settings_cursor][0] == "logo_backdrop":
             break
-    while tui.settings_cursor < i:
+    while tui.settings_cursor < folded:
         tui.handle_input("down")
+    tui.handle_input("enter")                             # unfold them
+    assert tui.setting_items[tui.settings_cursor][1] == "<pictures>" and tui.pictures_open
+    tui.handle_input("down")
+    assert tui.setting_items[tui.settings_cursor][1] == "7 - stage.png"
+    assert tui.setting("logo_backdrop") != "7 - stage.png"            # not loaded while the cursor passes by
+    frame(4)
     assert tui.setting("logo_backdrop") == "7 - stage.png" and tui.chosen("logo_backdrop") == "off"
     _, svg = render(tui, 120, 40)
     assert "#" in svg and any(c in svg.lower() for c in ("#783a46", "#7b3b47", "#7c3c48")) or "▀" in render(tui, 120, 40)[0]
@@ -1207,3 +1213,63 @@ def test_lyrics_not_sung_yet_are_shown_by_default_even_after_the_old_default_was
     assert uistate.load(old) == {"theme": "nord"}                    # the old default is dropped
     uistate.save(old, {"theme": "nord", "lyrics_ahead": "hide"})      # chosen now: kept
     assert uistate.load(old) == {"theme": "nord", "lyrics_ahead": "hide"}
+
+
+def test_spotify_credentials_are_typed_in_the_settings_and_kept_private(tmp_path, monkeypatch):
+    import os
+    import stat
+    import time
+
+    from tidal_shuffle import credentials
+    from tidal_shuffle.config import load_config
+
+    checked = []
+    monkeypatch.setattr(credentials, "check", lambda cid, sec: (checked.append((cid, sec)), (True, "fine"))[1])
+    tui, frame, clock = stepping_tui(None)
+    tui.open_settings()
+    i = next(i for i, it in enumerate(tui.setting_items) if it[0] == "spotify:client_id")
+    assert "not set" in tui.setting_items[i][3]
+    tui.apply_setting(i)
+    assert tui.editing == "spotify:client_id" and tui.text_sink() is not None
+    tui.text_input("abcd1234efgh")                         # typed or pasted: n, q... are text now
+    tui.text_input("\x7fh\x1b[A")                         # backspace, retype, an arrow is ignored
+    out = frame()
+    assert "abcd1234efgh█" in out
+    tui.text_input("\r")
+    assert tui.editing is None and tui.config.spotify.client_id == "abcd1234efgh"
+    j = next(i for i, it in enumerate(tui.setting_items) if it[0] == "spotify:client_secret")
+    tui.apply_setting(j)
+    tui.text_input("s3cr3t-value-9876")
+    assert "s3cr3t" not in frame() and "•••" in frame()       # the secret never shows
+    tui.handle_input("enter")
+    assert tui.config.spotify.client_secret == "s3cr3t-value-9876"
+    for _ in range(50):
+        if checked and tui._spotify_status.startswith("✓"):
+            break
+        time.sleep(0.01)
+    assert checked == [("abcd1234efgh", "s3cr3t-value-9876")]   # both set: checked at once
+    path = credentials.path()
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    cfg = load_config(env={})
+    assert cfg.spotify.client_id == "abcd1234efgh" and cfg.spotify.has_api_credentials   # remembered
+    tui.apply_setting(i)
+    tui.text_input("zzz")
+    tui.text_input("\x1b")                                   # Esc: nothing changes
+    assert tui.editing is None and tui.config.spotify.client_id == "abcd1234efgh"
+    assert any("ends in efgh" in it[3] for it in tui.setting_items if it[0] == "spotify:client_id")
+
+
+def test_saved_spotify_credentials_reach_the_running_sources(tmp_path):
+    from tidal_shuffle import credentials
+    from tidal_shuffle.config import load_config
+    from tidal_shuffle.sources.spotify_api import SpotifyApiSource
+    from tidal_shuffle.sources.spotify_ids import SpotifyApiIds
+
+    cfg = load_config(env={})
+    api = SpotifyApiSource(None, None)
+    api._dead = "no credentials"
+    app = types.SimpleNamespace(id_lookups=[])
+    cfg.spotify.client_id, cfg.spotify.client_secret = "id-1234567890", "secret-1234567890"
+    credentials.apply_live(cfg, [app, api])
+    assert api.client_id == "id-1234567890" and api._dead is None and api.available()[0]
+    assert isinstance(app.id_lookups[0], SpotifyApiIds)

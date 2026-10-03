@@ -41,6 +41,7 @@ class LoopState:
     recorded: bool = False                 # was `expected` already written to history?
     orphaned: dict = field(default_factory=dict)  # tidal id -> pick still sitting in TIDAL's queue
     planning: Optional[Future] = None      # background plan in flight
+    ahead: Optional[Future] = None         # the plan for after the pick, made while the pick is still to come
     generation: int = 0                    # bumps on every track change; stale plans are dropped
     picks_played: int = 0
     tracks_seen: int = 0
@@ -220,6 +221,11 @@ class ShuffleLoop:
         self._learn_start_delay(np, now)
         pos = np.position_at(self._wall()) or 0.0
         was_ours = st.expected is not None and self._matches_expected(np)
+        ahead, st.ahead = st.ahead, None
+        if not (was_ours and ahead is not None and getattr(ahead, "pick_id", None) == st.expected.track.id):
+            if ahead is not None and not ahead.done():
+                self.engine.cancel()
+            ahead = None                       # made for a song that is not the one starting
         orphan = st.orphaned.pop(np.tidal_id, None) if (np.tidal_id and not was_ours) else None
         if st.current is not None:
             st.recent_seeds.append(Seed.from_now_playing(st.current))
@@ -265,9 +271,21 @@ class ShuffleLoop:
         st.pending = None
         st.queue_checked = False
         st.skip_requested = False
+        if ahead is not None:                  # its next song was being chosen while it was still to come
+            ahead.generation = st.generation   # type: ignore[attr-defined]
+            if getattr(ahead, "trace", None) is not None:
+                self.engine.trace = ahead.trace
+            if ahead.done():
+                st.planning = ahead
+                self.collect_plan()
+            else:
+                st.planning = ahead
 
-    def _compute_plan(self, seed: Seed, anchor: Optional[Seed], recent: list, exclude: Optional[set]) -> Plan:
+    def _compute_plan(self, seed: Seed, anchor: Optional[Seed], recent: list, exclude: Optional[set],
+                      trace=None) -> Plan:
         try:
+            if trace is not None:
+                return self.engine.plan(seed, anchor=anchor, recent=recent, exclude_keys=exclude, trace=trace)
             return self.engine.plan(seed, anchor=anchor, recent=recent, exclude_keys=exclude)
         except Exception as e:  # never let planning take the loop down
             plan = Plan(seed=seed)
@@ -302,11 +320,50 @@ class ShuffleLoop:
             return None
         return self._apply_plan(self._compute_plan(*self._plan_inputs()), dry_run, allow_queue)
 
+    def request_ahead(self) -> None:
+        """Choose the song after the pick now, in the background, so that when
+        the pick starts its own next song is ready at once (pressing next again
+        and again never waits for a plan)."""
+        st = self.state
+        if (not self.background or self._closed or not getattr(self.config.shuffle, "plan_ahead", False)
+                or st.current is None or st.planning is not None or st.plan is None or st.plan.primary is None):
+            return
+        pick = st.plan.primary
+        if st.ahead is not None and (getattr(st.ahead, "pick_id", None) == pick.track.id or not st.ahead.done()):
+            return                             # already made, or one in flight (one at a time)
+        t = pick.track
+        seed = Seed(title=t.title, artist=t.artist, album=t.album, duration=t.duration, isrc=t.isrc, tidal_id=t.id,
+                    spotify_id=getattr(pick.candidate, "spotify_id", None))
+        recent = (list(st.recent_seeds) + [Seed.from_now_playing(st.current)])[-10:]
+        anchor = st.anchor
+        trace = self.engine.new_trace(seed) if hasattr(self.engine, "new_trace") else None
+        future: Future = Future()
+        future.pick_id = t.id            # type: ignore[attr-defined]
+        future.trace = trace             # type: ignore[attr-defined]
+
+        def work() -> None:
+            try:
+                future.set_result(self._compute_plan(seed, anchor, recent, None, trace))
+            except BaseException as e:  # pragma: no cover - _compute_plan catches Exception
+                future.set_exception(e)
+
+        threading.Thread(target=work, name="tidal-shuffle-planner-ahead", daemon=True).start()
+        st.ahead = future
+
+    def _drop_ahead(self) -> None:
+        """Forget the plan made ahead (the pick changed, or another song started)."""
+        st = self.state
+        if st.ahead is not None and not st.ahead.done():
+            self.engine.cancel()               # e.g. stop its Spotify harvest
+        st.ahead = None
+
     def request_plan(self, dry_run: bool = False) -> None:
         """Plan for the current song, on the worker thread when there is one."""
         st = self.state
         if st.current is None or st.planning is not None:
             return
+        if st.ahead is not None and not st.ahead.done():
+            self._drop_ahead()                 # the song playing comes first
         if not self.background or self._closed:
             self.plan_now(dry_run=dry_run)
             return
@@ -517,6 +574,7 @@ class ShuffleLoop:
             self.collect_plan(dry_run=dry_run)
         if not dry_run:
             self._skip_if_ready()
+            self.request_ahead()
 
         rem = self.remaining(np if tidal_live else None, now)
         lead = self.handoff_lead()

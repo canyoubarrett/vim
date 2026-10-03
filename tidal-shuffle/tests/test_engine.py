@@ -203,3 +203,47 @@ def test_the_choice_is_traced_step_by_step(tmp_path):
     assert any(l.startswith("order: top") for l in labels) and "find on TIDAL" in labels
     assert labels[-1] == f"pick: {plan.picks[0].track.label()}"
     assert all(n.status != "running" for _, n, _, _ in rows)              # everything ended
+
+
+def test_tidal_lookups_run_several_at_once_but_picks_keep_their_order(tmp_path):
+    import threading
+
+    class SlowCatalog(FakeCatalog):
+        def __init__(self):
+            super().__init__(missing={"A", "C"})
+            self.active = self.most = 0
+            self.lock = threading.Lock()
+
+        def match(self, c):
+            with self.lock:
+                self.active += 1
+                self.most = max(self.most, self.active)
+            time.sleep(0.05)
+            with self.lock:
+                self.active -= 1
+            return super().match(c)
+
+    import time
+    cat = SlowCatalog()
+    pool = [cand(t, f"Artist {t}", score=1 - i / 10) for i, t in enumerate("ABCDEFGH")]
+    eng = make_engine(tmp_path, [StaticSource(pool, name="lastfm")],
+                      {"shuffle": {"strategy": "top", "lookahead": 3, "artist_cooldown": 0}}, catalog=cat)
+    began = time.monotonic()
+    plan = eng.plan(Seed("Seed", "Someone"))
+    assert [p.track.title for p in plan.picks] == ["B", "D", "E"]      # in order, the missing ones skipped
+    assert cat.most > 1 and time.monotonic() - began < 0.05 * 5           # looked up side by side
+    eng.config.shuffle.lookup_workers = 1
+    eng.catalog = one = SlowCatalog()
+    eng.plan(Seed("Seed", "Someone"))
+    assert one.most == 1
+
+
+def test_a_plan_made_ahead_keeps_its_own_trace(tmp_path):
+    pool = [cand(t, f"Artist {t}") for t in "ABC"]
+    eng = make_engine(tmp_path, [StaticSource(pool, name="lastfm")], {"shuffle": {"strategy": "top"}})
+    live = eng.plan(Seed("Now", "Someone"))
+    shown = eng.trace
+    side = eng.new_trace(Seed("Next", "Other"))
+    ahead = eng.plan(Seed("Next", "Other"), trace=side)
+    assert eng.trace is shown and live.trace is shown and ahead.trace is side
+    assert any(n.label == "find on TIDAL" for _, n, _, _ in side.flat())

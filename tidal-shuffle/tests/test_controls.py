@@ -122,3 +122,36 @@ def test_key_reader_lone_escape_is_the_escape_key():
         os.close(master)
         os.close(slave)
     assert got == ["escape", "click:4:2", "quit"]
+
+
+def test_key_reader_hands_keys_to_a_field_being_typed_into():
+    master, slave = os.openpty()
+    got, text = [], []
+    done = threading.Event()
+    typing = {"on": True}
+
+    def sink(data):
+        text.append(data)
+        if "\r" in data or "\n" in data:     # (the terminal may turn Return into a newline)
+            typing["on"] = False
+
+    def on(cmd):
+        got.append(cmd)
+        if cmd == "quit":
+            done.set()
+
+    reader = KeyReader(on, fd=slave, text_sink=lambda: sink if typing["on"] else None)
+    assert reader.start()
+    try:
+        os.write(master, b"nq-id\r")          # typed into the field: not "next" and "quit"
+        for _ in range(100):
+            if not typing["on"]:
+                break
+            time.sleep(0.01)
+        os.write(master, b"q")                # the field is done: keys are commands again
+        assert done.wait(3)
+    finally:
+        reader.stop()
+        os.close(master)
+        os.close(slave)
+    assert "".join(text).rstrip("\r\n") == "nq-id" and got == ["quit"]

@@ -153,8 +153,12 @@ def terminal_bundle_id(env: Optional[dict] = None) -> Optional[str]:
 class KeyReader:
     """Read single keys from the terminal without Enter (cbreak mode)."""
 
-    def __init__(self, on_command: Command, fd: Optional[int] = None):
+    def __init__(self, on_command: Command, fd: Optional[int] = None,
+                 text_sink: Optional[Callable[[], Optional[Callable[[str], None]]]] = None):
+        """``text_sink``: asked before each read; while it returns a function
+        (a field is being typed into), input goes there as text, not commands."""
         self.on_command = on_command
+        self.text_sink = text_sink
         self.fd = sys.stdin.fileno() if fd is None else fd
         self._old = None
         self._stop = threading.Event()
@@ -195,6 +199,11 @@ class KeyReader:
                 return
             if not data:
                 return
+            sink = self.text_sink() if self.text_sink is not None else None
+            if sink is not None:
+                sink(pending + data.decode("utf-8", "ignore"))
+                pending = ""
+                continue
             commands, pending = parse_input(pending + data.decode("utf-8", "ignore"))
             if len(pending) > 32:
                 pending = ""                   # not a sequence we know
