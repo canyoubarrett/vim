@@ -56,6 +56,11 @@ SETTINGS = [
         ("muted", "Muted", "softer and greyer"),
         ("filled", "Logo colours, filled", "the logo's own colours, filled in"),
         ("wireframe", "Logo colours, outlines", "the logo's lines in its own colours"),
+        ("pastel", "Pastel, filled", "the logo's colours, softened"),
+        ("neon", "Neon outlines", "bright, glowing lines"),
+        ("sunset", "Sunset, filled", "golds, corals and magentas"),
+        ("ocean", "Ocean, filled", "blues and aquas"),
+        ("catppuccin", "Catppuccin, filled", "the theme's own colours"),
         ("mono", "Black and white", ""),
     ]),
     ("Logo motion", "logo_motion", [
@@ -63,6 +68,10 @@ SETTINGS = [
         ("gentle", "Gentle", "slower and smaller"),
         ("lively", "Lively", "bigger and quicker"),
         ("shapes", "Shapes", "every shape floats on its own"),
+        ("tide", "Tide", "drifts apart and back together, slowly"),
+        ("topple", "Topple", "falls apart as it leans, swings back together"),
+        ("jelly", "Jelly", "the pieces lag behind on springs and wobble"),
+        ("magnet", "Magnet", "pushed apart now and then, snapping back"),
         ("still", "Still", "no motion"),
     ]),
     ("Rain", "rain", [
@@ -536,9 +545,13 @@ class ShuffleTUI:
             return
         ui = getattr(self.config, "ui", None)
         th, p = self.th, self.th.p
+        from .visualizer import MOTIONS, STYLES, logo_palette
+
         style = getattr(ui, "logo_style", "theme")
-        sc.style = style if style in ("theme", "muted", "filled", "wireframe", "mono") else "theme"
-        sc.motion = getattr(ui, "logo_motion", "float")
+        sc.style = style if style in STYLES else "theme"
+        motion = getattr(ui, "logo_motion", "float")
+        sc.motion = motion if motion in MOTIONS else "float"
+        sc.colors = logo_palette(sc.style, p)
         if style == "muted":
             sc.logo, sc.glow = lerp(th.logo, p["overlay1"], 0.55), lerp(th.logo_glow, p["overlay2"], 0.5)
         elif style == "mono":

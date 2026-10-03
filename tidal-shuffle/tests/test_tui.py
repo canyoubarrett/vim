@@ -770,3 +770,62 @@ def test_glass_is_tinted_by_the_sky_not_by_panels_underneath():
     canvas.blit([[Segment("    ", mkstyle(None, False, (200, 100, 250)))]], 0, 0, 4, 1)    # a bright bar
     canvas.blit([[Segment("    ", mkstyle(None, False, MOCHA.bg))]], 0, 0, 4, 1)          # a panel over it
     assert cells[0][0][3] == canvas.sky[0][0] or sum(cells[0][0][3]) < 200
+
+
+def test_topple_falls_apart_as_it_leans_and_comes_back_together():
+    scene = LogoScene(motion="topple")
+    spread = []
+    for i in range(int(18 * 12)):
+        scene.frame(50, 24, i / 12)
+        lean = abs(scene.lean())
+        apart = max((abs(v[0]) + abs(v[1]) for v in scene._phys.values()), default=0.0)
+        spread.append((lean, apart))
+    leaning = [a for l, a in spread if l > 0.8]
+    upright = [a for l, a in spread[60:] if l < 0.05]
+    assert leaning and upright and min(leaning) > 3 * max(upright)
+    assert max(a for _, a in spread) > 20                 # well apart, in SVG units
+
+
+def test_spring_motions_lag_behind_and_never_jump():
+    from tidal_shuffle.visualizer import MOTIONS
+
+    for motion in ("jelly", "magnet", "topple", "tide"):
+        scene = LogoScene(motion=motion)
+        prev = None
+        for i in range(240):
+            scene.frame(50, 24, i / 12)
+            state = {k: tuple(v[:3]) for k, v in scene._phys.items()}
+            if prev:
+                for k, v in state.items():
+                    if k in prev:
+                        assert abs(v[0] - prev[k][0]) < 25 and abs(v[1] - prev[k][1]) < 25   # no teleporting
+            prev = state
+        assert motion in MOTIONS
+    jelly = LogoScene(motion="jelly")
+    for i in range(60):
+        jelly.frame(50, 24, i / 12)
+    assert any(abs(v[0]) + abs(v[1]) > 0.5 for v in jelly._phys.values())      # the pieces lag the logo
+    # switching back to the plain float lets the springs settle and go quiet
+    jelly.motion = "float"
+    for i in range(60, 360):
+        jelly.frame(50, 24, i / 12)
+    assert all(abs(v[0]) + abs(v[1]) < 0.5 for v in jelly._phys.values())
+
+
+def test_more_logo_colour_schemes():
+    from tidal_shuffle.visualizer import LOGO_COLORS, logo_palette
+
+    for style in ("pastel", "neon", "sunset", "ocean", "catppuccin"):
+        pal = logo_palette(style, MOCHA.p)
+        assert set(pal) == set(LOGO_COLORS) and pal != LOGO_COLORS
+    assert logo_palette("catppuccin", MOCHA.p)["purple"] == MOCHA.p["mauve"]
+    tui = make_tui(None)
+    tui.config.ui.logo_style = "sunset"
+    tui._apply_logo_style()
+    assert tui.scene.colors == logo_palette("sunset", MOCHA.p)
+    for style in ("pastel", "sunset", "ocean", "catppuccin", "neon"):
+        scene = LogoScene(style=style, bg=MOCHA.bg)
+        scene.colors = logo_palette(style, MOCHA.p)
+        for i in range(25):
+            g = scene.frame(40, 20, i / 10)
+        assert sum(1 for r in g for c in r if c[0] != " " or (len(c) > 3 and c[3])) > 40

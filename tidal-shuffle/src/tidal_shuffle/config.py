@@ -95,8 +95,8 @@ class UiConfig:
     art_blocks: str = "quadrant"  # quadrant: 2x2 pixels per cell | half: 1x2 (for fonts without quadrants)
     backdrop: bool = True         # rain behind the panels
     rain: float = 0.3             # how visible the rain is: 0 (not at all) .. 1 (plain to see)
-    logo_style: str = "theme"     # theme | muted | filled | wireframe | mono (also in the Esc menu)
-    logo_motion: str = "float"    # float | gentle | lively | shapes | still
+    logo_style: str = "theme"     # theme | muted | filled | wireframe | pastel | neon | sunset | ocean | catppuccin | mono
+    logo_motion: str = "float"    # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
     lyrics_lead: float = 0.55     # show the line being sung, and its words, this many seconds early
     lyrics_ahead: str = "hide"    # lines not sung yet: hide | dim | show
     glass: float = 0.22           # how much of the rain shows through the panels (0 = none)
@@ -371,8 +371,9 @@ ui:
   art_blocks: quadrant      # quadrant: 2x2 pixels per cell | half: 1x2, if your font lacks ▚ ▞ ▙ ▟
   backdrop: true            # rain falling behind the panels
   rain: 0.3                 # how visible the rain is: 0 (not at all) to 1 (plain to see)
-  logo_style: theme         # theme | muted | filled | wireframe | mono  (Esc opens the settings menu)
-  logo_motion: float        # float | gentle | lively | shapes (each shape on its own) | still
+  logo_style: theme         # theme | muted | filled | wireframe | pastel | neon | sunset | ocean |
+                            # catppuccin | mono  (Esc opens the settings menu)
+  logo_motion: float        # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
   lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
   lyrics_ahead: hide        # lines not sung yet: hide | dim | show
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
@@ -654,8 +655,10 @@ def _build(data: Mapping) -> AppConfig:
         "art_blocks": lambda v, n: _as_choice(str(v).lower(), n, ("quadrant", "half")),
         "backdrop": _as_bool,
         "rain": lambda v, n: _as_number(v, n, float, 0.0, 1.0),
-        "logo_style": lambda v, n: _as_choice(str(v).lower(), n, ("theme", "muted", "filled", "wireframe", "mono")),
-        "logo_motion": lambda v, n: _as_choice(str(v).lower(), n, ("float", "gentle", "lively", "shapes", "still")),
+        "logo_style": lambda v, n: _as_choice(str(v).lower(), n, ("theme", "muted", "filled", "wireframe", "pastel",
+                                                                 "neon", "sunset", "ocean", "catppuccin", "mono")),
+        "logo_motion": lambda v, n: _as_choice(str(v).lower(), n, ("float", "gentle", "lively", "shapes", "tide",
+                                                                  "topple", "jelly", "magnet", "still")),
         "lyrics_lead": lambda v, n: _as_number(v, n, float, -1.0, 3.0),
         "lyrics_ahead": lambda v, n: _as_choice(str(v).lower(), n, ("hide", "dim", "show")),
         "glass": lambda v, n: _as_number(v, n, float, 0.0, 0.6),

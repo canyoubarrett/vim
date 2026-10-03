@@ -158,10 +158,17 @@ between runs (in `~/.config/tidal-shuffle/ui.json`; they override the
 config file's `ui:` section):
 
 * **Logo colours**: the theme's lilac, a muted grey one, the logo's own
-  colours filled in (drawn with quarter blocks, with dark edges), the logo's
-  lines in its own colours, or black and white (`ui.logo_style`);
-* **Logo motion**: float, gentle, lively, still, or shapes, where every
-  shape of the logo floats on its own (`ui.logo_motion`); switching eases
+  colours filled in (drawn with quarter blocks, with dark edges) or as
+  outlines, pastel, neon outlines, sunset, ocean, the theme's Catppuccin
+  accents, or black and white (`ui.logo_style`);
+* **Logo motion** (`ui.logo_motion`): float, gentle, lively, still;
+  shapes (every shape floats on its own); tide (slowly drifts apart and
+  back together); topple (it stays upright a while, then leans far over and
+  falls apart as it leans, the upper pieces furthest, and swings back
+  together as it rights itself); jelly (the pieces hang on springs, lag
+  behind the logo's movement and wobble); magnet (pushed apart now and then,
+  snapping back). The pieces move on damped springs, so they have weight:
+  they trail behind, overshoot a little and settle; and switching eases
   from one motion into the other;
 * **Rain**: off, faint, soft or clear (`ui.rain`);
 * **Lyrics not sung yet**: hidden (each line appears when it is sung; the

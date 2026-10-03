@@ -230,15 +230,62 @@ ALTER_ERA_REGIONS = [
     ("dart", "teal", [(248.877, 307.606), (294.970, 278.225), (249.218, 430.459)]),
     ("eye", "eye", ("circle", 248.226, 274.126, 15.186)),
 ]
-STYLES = ("theme", "muted", "filled", "wireframe", "mono")
-# motion: how far (1 = the classic float) and how fast it floats, and how much each shape floats on its own
-MOTIONS = {
-    "float": (1.0, 1.0, 0.0),
-    "gentle": (0.5, 0.6, 0.0),
-    "lively": (1.6, 1.5, 0.0),
-    "still": (0.0, 1.0, 0.0),
-    "shapes": (0.6, 0.8, 1.0),
-}
+STYLES = ("theme", "muted", "filled", "wireframe", "mono", "pastel", "neon", "sunset", "ocean", "catppuccin")
+FILLED_STYLES = ("filled", "pastel", "sunset", "ocean", "catppuccin")
+OUTLINE_STYLES = ("wireframe", "neon")
+
+# Motions. amp: how far it floats (1 = the classic float); speed; tilt: how far
+# it leans; pieces: how much each shape floats on its own; tide: the shapes
+# drift apart and back together in a slow cycle. Physics motions put every
+# shape on a spring: k (stiffness), zeta (damping; under 1 it overshoots and
+# swings), inertia (how much a shape is left behind when the logo moves).
+_MOTION_DEFAULTS = {"amp": 1.0, "speed": 1.0, "tilt": 1.0, "pieces": 0.0, "tide": 0.0, "sway": 0.0,
+                    "physics": None, "k": 20.0, "zeta": 0.9, "inertia": 0.0}
+MOTIONS = {name: dict(_MOTION_DEFAULTS, **v) for name, v in {
+    "float": {},
+    "gentle": {"amp": 0.5, "speed": 0.6},
+    "lively": {"amp": 1.6, "speed": 1.5},
+    "still": {"amp": 0.0},
+    "shapes": {"amp": 0.6, "speed": 0.8, "pieces": 1.0},
+    "tide": {"amp": 0.8, "speed": 0.8, "tide": 1.0},
+    "topple": {"amp": 0.7, "speed": 0.8, "sway": 1.0, "physics": "topple", "k": 12.0, "zeta": 0.38, "inertia": 1.0},
+    "jelly": {"amp": 1.6, "speed": 1.3, "physics": "jelly", "k": 14.0, "zeta": 0.22, "inertia": 1.0},
+    "magnet": {"amp": 0.6, "speed": 0.8, "physics": "magnet", "k": 32.0, "zeta": 0.35, "inertia": 0.4},
+}.items()}
+
+
+def _hsv_boost(c: Color, sat: float = 1.0, val: float = 1.0) -> Color:
+    import colorsys
+
+    h, s_, v = colorsys.rgb_to_hsv(*(x / 255 for x in c))
+    r, g, b = colorsys.hsv_to_rgb(h, min(1.0, max(s_, sat)), min(1.0, max(v, val)))
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+def logo_palette(style: str, theme_palette: Optional[dict] = None) -> dict:
+    """The logo's colours for a style: its own, or reworked (pastel, neon,
+    sunset, ocean, or the theme's Catppuccin accents)."""
+    base = dict(LOGO_COLORS)
+    if style == "pastel":
+        out = {k: lerp(v, (255, 255, 255), 0.45) for k, v in base.items()}
+        out["ink"] = (70, 66, 84)
+        return out
+    if style == "neon":
+        return {k: (_hsv_boost(v, 0.95, 1.0) if k != "ink" else v) for k, v in base.items()}
+    if style == "sunset":
+        return dict(base, sun=(255, 214, 102), red=(214, 64, 92), salmon=(255, 128, 102), peach=(255, 170, 90),
+                    cyan=(255, 94, 135), teal=(196, 60, 120), deep=(90, 30, 80), eye=(255, 230, 180),
+                    purple=(120, 70, 170), ink=(40, 16, 40))
+    if style == "ocean":
+        return dict(base, sun=(160, 220, 255), red=(40, 90, 170), salmon=(70, 140, 210), peach=(110, 180, 230),
+                    cyan=(0, 210, 255), teal=(0, 140, 200), deep=(10, 50, 100), eye=(200, 245, 255),
+                    purple=(90, 100, 220), ink=(8, 20, 40))
+    if style == "catppuccin" and theme_palette:
+        p = theme_palette
+        return dict(base, sun=p["yellow"], red=p["red"], salmon=p["flamingo"], peach=p["peach"], cyan=p["sky"],
+                    teal=p["teal"], deep=lerp(p["sapphire"], p["crust"], 0.55), eye=p["rosewater"],
+                    purple=p["mauve"], ink=p["crust"])
+    return base
 
 
 def _circle_center(p1, p2, p3) -> tuple[float, float]:
@@ -298,8 +345,12 @@ class LogoScene:
         self.colors = dict(LOGO_COLORS)
         self.style = style if style in STYLES else "theme"
         self.motion = motion if motion in MOTIONS else "float"
-        amp, speed, pieces = MOTIONS[self.motion]
-        self._amp, self._speed, self._pieces = amp, speed, pieces   # eased towards the motion's values
+        m = MOTIONS[self.motion]
+        # eased towards the chosen motion's values, so a change never jumps
+        self._amp, self._speed, self._pieces, self._tilt, self._tide = m["amp"], m["speed"], m["pieces"], m["tilt"], m["tide"]
+        self._sway = m["sway"]
+        self._phys: dict = {}    # shape -> [x, y, turn, vx, vy, vturn]: its spring, in SVG units and radians
+        self._scale_seen = 0.3   # dots per SVG unit at the last frame (to turn the logo's motion into units)
         self._last_t: Optional[float] = None
         self._float_t = 0.0      # float time: runs at full speed while playing, slowly while paused
         self._motion_t = 0.0     # float time scaled by the motion's speed
@@ -339,9 +390,20 @@ class LogoScene:
         tilt = math.radians(1.6) * lean + math.radians(0.6) * math.sin(2 * math.pi * t / 3.7)
         return drift, bob, tilt
 
-    def pose(self) -> tuple[float, float, float]:
-        dx, dy, tilt = self.logo_pose(self._motion_t)
-        return dx * self._amp, dy * self._amp, tilt * self._amp
+    def pose(self, t: Optional[float] = None) -> tuple[float, float, float]:
+        t = self._motion_t if t is None else t
+        dx, dy, tilt = self.logo_pose(t)
+        return dx * self._amp, dy * self._amp, tilt * self._amp * self._tilt + math.radians(18) * self.lean(t)
+
+    def lean(self, t: Optional[float] = None) -> float:
+        """The topple sway, -1..1: it stays upright a while, then swings far over and back."""
+        t = self._motion_t if t is None else t
+        return self._sway * math.sin(2 * math.pi * t / 9.0) ** 3
+
+    def pieces_now(self) -> float:
+        """How far the shapes float on their own right now (tide: in and out)."""
+        tide = self._tide * (0.5 - 0.5 * math.cos(2 * math.pi * self._motion_t / 16.0))
+        return min(1.0, self._pieces + tide)
 
     def _layout(self, width: int, height: int):
         """Scale (dots per SVG unit, vertically) and the function that takes a
@@ -350,7 +412,7 @@ class LogoScene:
         bw, bh = max(1e-6, x1 - x0), max(1e-6, y1 - y0)
         # as big as the panel allows, leaving just the room the float needs:
         # 5.2 dots of drift each side, 4.1 dots of bob (more when the shapes spread), and the shadow's row
-        spare = 1.0 + 0.12 * self._pieces
+        spare = 1.0 + 0.12 * max(self._pieces, self._tide) + (0.12 if MOTIONS[self.motion]["physics"] else 0.0)
         avail_w = max(4, ((width - 1) * 2 - 14) / spare)
         avail_h = max(4, ((height - 1) * 4 - 11) / spare)
         scale = min(avail_w * self.dot_ratio / bw, avail_h / bh)   # dots (vertical) per unit
@@ -359,9 +421,11 @@ class LogoScene:
         c, s = math.cos(tilt), math.sin(tilt)
         cx = width * 2 / 2 + dx
         cy = (height - 1) * 4 / 2 + dy
-        f = self._pieces
+        f = self.pieces_now()
         ratio = self.dot_ratio
         poses = {}
+        self._scale_seen = scale
+        phys = self._phys
 
         def place(shape: str):
             """The transform for one shape: its own float (when the shapes move
@@ -377,9 +441,17 @@ class LogoScene:
             else:
                 pdx = pdy = 0.0
                 gx, gy, tc, ts, ox, oy = mx, my, 1.0, 0.0, 0.0, 0.0
+            sp = phys.get(shape)
+            if sp is not None and (abs(sp[0]) + abs(sp[1]) + abs(sp[2])) > 1e-4:
+                # the shape's spring: an offset and a turn about its own middle
+                gx, gy = self._shape_centre.get(shape, (mx, my))
+                turn = math.atan2(ts, tc) + sp[2]
+                tc, ts = math.cos(turn), math.sin(turn)
+                ox, oy = ox + sp[0], oy + sp[1]
+            moved = f > 0.001 or sp is not None
 
             def to_dots(ux: float, uy: float) -> tuple[float, float]:
-                if f > 0.001:
+                if moved:
                     rx, ry = ux - gx, uy - gy
                     ux, uy = gx + rx * tc - ry * ts + ox, gy + rx * ts + ry * tc + oy
                 vx, vy = (ux - mx) * scale, (uy - my) * scale
@@ -513,13 +585,90 @@ class LogoScene:
         return cells, rise, (min_c, max_c, max_r)
 
     def _advance(self, dt: float) -> None:
-        """Move time on, and ease the motion towards the chosen one's settings."""
-        amp, speed, pieces = MOTIONS.get(self.motion, MOTIONS["float"])
+        """Move time on, ease the motion towards the chosen one's settings, and
+        move every shape's spring."""
+        m = MOTIONS.get(self.motion, MOTIONS["float"])
         k = min(1.0, dt / 1.2) if dt > 0 else 0.0
-        self._amp += (amp - self._amp) * k
-        self._speed += (speed - self._speed) * k
-        self._pieces += (pieces - self._pieces) * k
+        self._amp += (m["amp"] - self._amp) * k
+        self._speed += (m["speed"] - self._speed) * k
+        self._pieces += (m["pieces"] - self._pieces) * k
+        self._tilt += (m["tilt"] - self._tilt) * k
+        self._tide += (m["tide"] - self._tide) * k
+        self._sway += (m["sway"] - self._sway) * k
+        before = self.pose()
         self._motion_t += dt * self._speed
+        if dt > 0 and self.polylines:
+            self._springs(dt, m, before, self.pose())
+
+    def _targets(self, m: dict, tilt: float) -> dict:
+        """Where each shape's spring pulls it (SVG units, radians), for physics motions."""
+        if not m["physics"] or not getattr(self, "_shape_centre", None):
+            return {}
+        x0, y0, x1, y1 = self._vb
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        half = max(1e-6, (y1 - y0) / 2)
+        out = {}
+        names = sorted(self._shape_centre)
+        if m["physics"] == "topple":
+            lean = max(-1.0, min(1.0, self.lean()))
+            a = abs(lean) ** 1.2                     # the further it leans, the more it falls apart
+            side = 1.0 if lean >= 0 else -1.0
+            for name in names:
+                gx, gy = self._shape_centre[name]
+                height = max(0.0, min(1.0, (y1 - gy) / (y1 - y0)))   # 0 at the tip, 1 at the top
+                out[name] = (a * (side * 80.0 * height + (gx - mx) * 0.5),
+                             a * ((gy - my) * 0.35 + 26.0 * height),
+                             tilt * 1.3 * a)
+        elif m["physics"] == "magnet":
+            cycle = 9.0
+            ph = (self._motion_t % cycle) / cycle
+            push = math.sin(math.pi * ph / 0.35) if ph < 0.35 else 0.0   # pushed apart, then let go
+            for i, name in enumerate(names):
+                gx, gy = self._shape_centre[name]
+                twist = math.radians(18) * (((i * 7919) % 13) / 6.0 - 1.0)
+                out[name] = ((gx - mx) * 0.45 * push, (gy - my) * 0.45 * push + 4.0 * push * (gy - my) / half,
+                             twist * push)
+        else:                                          # jelly: no pull of its own; the lag is the motion
+            out = {name: (0.0, 0.0, 0.0) for name in names}
+        return out
+
+    def _springs(self, dt: float, m: dict, before: tuple, after: tuple) -> None:
+        """Every shape on a damped spring towards its target. With inertia, the
+        shapes are left behind when the logo moves and catch up: a delay and a
+        wobble, like weights on springs or magnets."""
+        targets = self._targets(m, after[2])
+        scale = max(1e-3, self._scale_seen)
+        names = sorted(self._shape_centre) if getattr(self, "_shape_centre", None) else []
+        if not targets and not self._phys:
+            return
+        # the logo's movement this frame, in SVG units, that the shapes lag behind
+        ddx = (after[0] - before[0]) * self.dot_ratio / scale
+        ddy = (after[1] - before[1]) / scale
+        dtilt = after[2] - before[2]
+        inertia = m["inertia"]
+        steps = max(1, int(math.ceil(dt / (1 / 60))))
+        h = dt / steps
+        for i, name in enumerate(names):
+            st = self._phys.setdefault(name, [0.0] * 6)
+            tx, ty, tr = targets.get(name, (0.0, 0.0, 0.0))
+            loose = 0.6 + 0.8 * (((i * 2654435761) % 1000) / 1000.0)   # each shape its own spring
+            kk = m["k"] / loose if m["physics"] else 20.0
+            zz = m["zeta"] if m["physics"] else 0.9
+            c = 2 * zz * math.sqrt(kk)
+            st[0] -= ddx * inertia
+            st[1] -= ddy * inertia
+            st[2] -= dtilt * inertia
+            for _ in range(steps):
+                for j, target in ((0, tx), (1, ty), (2, tr)):
+                    a = kk * (target - st[j]) - c * st[3 + j]
+                    st[3 + j] += a * h
+                    st[j] += st[3 + j] * h
+            # keep it on the panel: never further than a third of the logo away
+            lim = (self._vb[3] - self._vb[1]) / 3
+            st[0] = max(-lim, min(lim, st[0]))
+            st[1] = max(-lim, min(lim, st[1]))
+        if not m["physics"] and all(abs(v) < 1e-3 for st in self._phys.values() for v in st):
+            self._phys.clear()                       # settled: nothing left to move
 
     def frame(self, width: int, height: int, now: float, playing: bool = True) -> list:
         """One frame: ``height`` rows of ``width`` cells."""
@@ -528,15 +677,17 @@ class LogoScene:
         self._last_t = now
         if self.shown_at is None:
             self.shown_at = now
-            amp, speed, pieces = MOTIONS.get(self.motion, MOTIONS["float"])
-            self._amp, self._speed, self._pieces = amp, speed, pieces
+            m = MOTIONS.get(self.motion, MOTIONS["float"])
+            self._amp, self._speed, self._pieces, self._tilt, self._tide = (m["amp"], m["speed"], m["pieces"],
+                                                                            m["tilt"], m["tide"])
+            self._sway = m["sway"]
         step = dt if playing else dt * 0.35        # paused: it keeps drifting, slowly
         self._float_t += step
         self._advance(step)
 
         grid: list = [[(" ", None)] * width for _ in range(height)]
         fade = smoothstep((now - self.shown_at) / 1.6)   # the logo fades up
-        filled = self.style == "filled" and bool(self.regions)
+        filled = self.style in FILLED_STYLES and bool(self.regions)
         if filled:
             fcells, (left, right, bottom) = self._filled_grid(width, height, fade)
             cells, rise = {}, (0.5 if self._amp <= 0.01 else
@@ -562,8 +713,9 @@ class LogoScene:
             return grid
         glow = 0.5 + 0.5 * math.sin(2 * math.pi * self._float_t / 4.8)
         color = lerp(self.bg, lerp(self.logo, self.glow, glow * 0.45), fade)
-        if self.style == "wireframe" and self._cell_colors:
-            shades = {k: lerp(self.bg, lerp(v, (255, 255, 255), glow * 0.12), fade) for k, v in self.colors.items()}
+        if self.style in OUTLINE_STYLES and self._cell_colors:
+            shine = 0.35 if self.style == "neon" else 0.12
+            shades = {k: lerp(self.bg, lerp(v, (255, 255, 255), glow * shine), fade) for k, v in self.colors.items()}
             for (row, col), bits in cells.items():
                 key = self._cell_colors.get((row, col))
                 grid[row][col] = (chr(0x2800 + bits), shades[key] if key else color)
