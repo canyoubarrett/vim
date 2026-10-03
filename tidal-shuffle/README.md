@@ -51,6 +51,15 @@ window. `tidal-shuffle app` makes it again; `--terminal iTerm` (or Ghostty, WezT
 opens it there instead, and `--preset NAME` starts it with a preset. The app runs
 this installed copy, so `tidal-shuffle update` keeps it current.
 
+**Giving it to a friend.** `python3 tools/make_share.py` makes `dist/Tidal Shuffle/`
+(and a zip of it): a folder with **Install Tidal Shuffle.command**, a read-me, the
+manuals and the program. Your friend copies it anywhere and double-clicks the
+installer, which installs Homebrew if needed, copies the program to
+`~/.tidal-shuffle`, signs in to TIDAL, checks everything and opens the app. Nothing
+of yours goes in it (no settings, history, credentials or pictures). macOS may
+first ask them to allow the installer under System Settings → Privacy & Security
+→ Open Anyway, since it comes from another Mac.
+
 `tidal-shuffle config init` writes an optional config file to
 `~/.config/tidal-shuffle/config.yaml`.
 

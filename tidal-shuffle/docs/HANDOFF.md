@@ -268,6 +268,16 @@ logo regions (PNG-based ICNS entries). Not yet opened on a real Mac.
 
 ---
 
+### 4.11 Sharing it (`tools/make_share.py`)
+
+Builds `dist/Tidal Shuffle/` and `dist/Tidal-Shuffle-<version>.zip` for people
+without git: `Install Tidal Shuffle.command` (installs Homebrew if missing,
+copies the program to `~/.tidal-shuffle/source`, runs `install.sh` there, signs
+in to TIDAL, runs `doctor`, opens the app), `Read me.txt`, the manuals, and the
+program (no tests, nothing personal). Such installs are not git clones, so
+`tidal-shuffle update` tells them to get a newer folder and run the installer
+again.
+
 ## 5. Files on the user's Mac (`~/.config/tidal-shuffle/`, `paths.py`)
 
 | File | Holds |
