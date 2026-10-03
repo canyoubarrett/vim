@@ -69,6 +69,7 @@ class Engine:
         self.features = features                 # audio features for the flows (features.ReccoBeats)
         self._song_features: dict = {}           # seed key -> Features (the first song's, for steady/soundscape)
         self._last_target: Optional[float] = None
+        self.trace = None                        # the live record of the choice being made (trace.Trace)
 
     # ------------------------------------------------------------------
     def cancel(self) -> None:
@@ -96,7 +97,9 @@ class Engine:
         enough (unless blending); ``everything`` asks the sources not tried yet."""
         shuffle = self.config.shuffle
         pool: list[Candidate] = []
-        for src in self.sources:
+        tr = self.trace
+        group = tr.add(None, "asking the other sources" if everything else "sources", "step", status="running") if tr else None
+        for i, src in enumerate(self.sources):
             if everything and src.name in plan.sources_tried:
                 continue
             ok, reason = src.available()
@@ -104,34 +107,58 @@ class Engine:
                 if src.name not in self._unavailable_reported:
                     self.log(f"source {src.name} unavailable: {reason}")
                     self._unavailable_reported.add(src.name)
+                if tr:
+                    tr.add(group, src.name, "source", f"unavailable: {reason}", "skipped")
                 continue
             plan.sources_tried.append(src.name)
+            node = tr.add(group, src.name, "source", "asking…", "running") if tr else None
+            began = time.monotonic()
             try:
                 cands = src.candidates(seeds, shuffle.candidates)
             except Exception as e:  # a flaky source must never kill the loop
                 self.log(f"source {src.name} failed: {e}")
                 plan.notes.append(f"{src.name}: {e}")
+                if tr:
+                    tr.update(node, detail=f"failed: {e}", status="failed")
                 continue
             for c in cands:
                 c.source = c.source or src.name
             if cands:
                 self.log(f"source {src.name}: {len(cands)} candidates")
                 plan.source_used = plan.source_used or src.name
+            if tr:
+                tr.update(node, detail=f"{len(cands)} songs · {time.monotonic() - began:.1f}s",
+                          status="done" if cands else "failed")
             pool.extend(cands)
             if not everything and not shuffle.blend and len(pool) >= 3:
+                if tr:
+                    for rest in self.sources[i + 1:]:
+                        tr.add(group, rest.name, "source", "not needed", "skipped")
                 break
+        if tr:
+            tr.update(group, detail=f"{len(pool)} songs", status="done" if pool else "failed")
         return pool
 
     def _clean(self, pool: list[Candidate], avoid: list[Seed], exclude_keys: Optional[set] = None) -> list[Candidate]:
         out: list[Candidate] = []
-        for c in dedupe(pool):
+        unique = dedupe(pool)
+        dropped = {"repeats in the radio": len(pool) - len(unique), "playing or just played": 0,
+                   "refused by TIDAL": 0, "look-alikes": 0}
+        for c in unique:
             if exclude_keys and c.key in exclude_keys:
+                dropped["refused by TIDAL"] += 1
                 continue  # e.g. a pick that TIDAL just refused to play
             if any(same_song(c.title, c.artist, s.title, s.artist) for s in avoid):
+                dropped["playing or just played"] += 1
                 continue
             if looks_like_knockoff(c.title, c.artist):
+                dropped["look-alikes"] += 1
                 continue
             out.append(c)
+        if self.trace:
+            why = ", ".join(f"{n} {k}" for k, n in dropped.items() if n)
+            self.trace.add(None, "pool", "step", f"{len(pool)} → {len(out)}" + (f"  (left out: {why})" if why else ""),
+                           "done" if out else "failed")
         return out
 
     def _flow_fits(self, pool: list[Candidate], current: Seed, anchor: Optional[Seed], plan: Plan) -> dict:
@@ -141,6 +168,9 @@ class Engine:
         shuffle = self.config.shuffle
         plan.flow = shuffle.flow
         if shuffle.flow == "radio" or self.features is None or not pool:
+            if self.trace and pool:
+                self.trace.add(None, f"flow: {shuffle.flow}", "step",
+                               "the radio's own order" if shuffle.flow == "radio" else "no audio features", "done")
             return {}
         ids = [c.spotify_id for c in pool if c.spotify_id]
         if current.spotify_id:
@@ -168,6 +198,8 @@ class Engine:
         plan.flow_target = res.target
         if res.note:
             plan.notes.append(res.note)
+        if self.trace:
+            self.trace.add(None, f"flow: {shuffle.flow}", "step", res.note or "", "done")
         return res.fits
 
     def _context(self, seed: Seed) -> PickContext:
@@ -194,6 +226,16 @@ class Engine:
         ordered, note = order_candidates(pool, ctx, self.config.shuffle.strategy, self.rng)
         if note:
             plan.notes.append(note)
+        tr = self.trace
+        if tr:
+            order = tr.add(None, f"order: {self.config.shuffle.strategy}", "step",
+                           f"{len(ordered)} songs" + (f" · {note}" if note else ""), "done")
+            for c in ordered[:5]:
+                fit = ctx.fit.get(c.key) if ctx.fit else None
+                tr.add(order, c.label(), "candidate",
+                       f"{c.source} #{c.rank + 1} · score {c.score:.2f}" + (f" · fit {fit:.2f}" if fit is not None else ""),
+                       "done")
+            look = tr.add(None, "find on TIDAL", "step", status="running")
         wanted = max(1, self.config.shuffle.lookahead)
         tried = 0
         seen_ids: set[str] = {p.track.id for p in plan.picks}
@@ -202,42 +244,60 @@ class Engine:
             if len(plan.picks) >= wanted:
                 break
             tried += 1
+            node = tr.add(look, cand.label(), "candidate", "looking…", "running") if tr else None
             try:
                 track = self.catalog.match(cand)
             except Exception as e:
                 self.log(f"TIDAL match failed for {cand.label()}: {e}")
                 track = None
-            if track is None or track.id in seen_ids:
-                continue  # unknown on TIDAL, or the same TIDAL track as an earlier pick
-            if not allow_repeats and (track.id in ctx.recent_tidal_ids or track.key in ctx.recent_keys):
-                continue  # heard recently under a slightly different title ("... (Remastered)")
-            if not ctx.allow_seed_artist and ctx.seed_artist and \
+            skip = None
+            if track is None:
+                skip = "not on TIDAL"
+            elif track.id in seen_ids:
+                skip = "same track as another pick"      # e.g. the same TIDAL track as an earlier pick
+            elif not allow_repeats and (track.id in ctx.recent_tidal_ids or track.key in ctx.recent_keys):
+                skip = "heard recently"                  # under a slightly different title ("... (Remastered)")
+            elif not ctx.allow_seed_artist and ctx.seed_artist and \
                     shares_artist(track.artists or [track.artist], ctx.seed_artist):
-                continue  # TIDAL credits the artist playing now: never back to back
-            if not self.config.shuffle.allow_explicit and track.explicit:
+                skip = "same artist as now"              # never back to back
+            elif not self.config.shuffle.allow_explicit and track.explicit:
+                skip = "explicit"
+            elif track.duration is not None and not (self.config.shuffle.min_duration <= track.duration <= self.config.shuffle.max_duration):
+                skip = "too long or too short"
+            if skip:
+                if tr:
+                    tr.update(node, detail=skip, status="skipped")
                 continue
-            if track.duration is not None and not (self.config.shuffle.min_duration <= track.duration <= self.config.shuffle.max_duration):
-                continue
+            if tr:
+                tr.update(node, detail="found" + (" · pick" if not plan.picks else " · backup"), status="done")
             cand.tidal_id = track.id
             seen_ids.add(track.id)
             plan.picks.append(Pick(candidate=cand, track=track,
                                    reason=f"{cand.source} #{cand.rank + 1}, score {cand.score:.2f}"))
             if tried > wanted * 8:
                 break
+        if tr:
+            tr.update(look, detail=f"{tried} looked up, {len(plan.picks)} found", status="done" if plan.picks else "failed")
         if not plan.picks:
             plan.notes.append(f"none of {tried} candidates could be found on TIDAL")
 
     def plan(self, current: Seed, anchor: Optional[Seed] = None, recent: Sequence[Seed] = (),
              exclude_keys: Optional[set] = None) -> Plan:
         """Decide what to play after ``current``."""
+        from .trace import Trace
+
         started = time.monotonic()
         plan = Plan(seed=current)
+        shuffle = self.config.shuffle
+        self.trace = tr = Trace(f"after {current.label()}",
+                                f"{shuffle.flow} · {shuffle.strategy} · seed: {shuffle.seed}")
         try:
             current = self.catalog.resolve_seed(current)
             plan.seed = current
         except Exception as e:
             self.log(f"could not resolve seed on TIDAL: {e}")
             plan.notes.append(f"seed unresolved: {e}")
+            tr.add(None, "seed", "step", f"not resolved on TIDAL: {e}", "failed")
 
         seeds = self.effective_seeds(current, anchor, recent)
         # Never offer the song now playing, the seeds, or the last few songs heard.
@@ -256,4 +316,12 @@ class Engine:
                 ctx.fit = self._flow_fits(pool, current, anchor, plan)
                 self._choose(pool, ctx, plan)
         plan.elapsed = time.monotonic() - started
+        if plan.picks:
+            pick = plan.picks[0]
+            tr.add(None, f"pick: {pick.track.label()}", "pick",
+                   ("backups: " + ", ".join(p.track.label() for p in plan.picks[1:])) if plan.picks[1:] else "", "done")
+            tr.finish("done", f"{shuffle.flow} · {shuffle.strategy} · {plan.elapsed:.1f}s")
+        else:
+            tr.add(None, "no pick", "pick", "; ".join(plan.notes[-2:]), "failed")
+            tr.finish("failed")
         return plan

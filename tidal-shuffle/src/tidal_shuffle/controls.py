@@ -36,12 +36,13 @@ TERMINAL_KEYS = {
     "f": "flow",
     "p": "presets",
     "a": "art",
+    "t": "tree",
     "q": "quit",
     "?": "help",
     "h": "help",
 }
 
-KEY_HELP = "space play/pause · n next pick · b back · f flow · p presets · l lyrics · a cover · esc settings · q quit · ? help"
+KEY_HELP = "space play/pause · n next pick · b back · f flow · p presets · l lyrics · a cover · t shuffle tree · esc settings · q quit · ? help"
 
 # Mouse reporting (SGR mode): clicks and the wheel arrive as \x1b[<b;x;yM.
 MOUSE_ON = "\x1b[?1000h\x1b[?1006h"

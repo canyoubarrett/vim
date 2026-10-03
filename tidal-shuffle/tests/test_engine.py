@@ -185,3 +185,21 @@ def test_radio_of_only_the_same_artist_falls_back_to_the_next_source(tmp_path):
     plan = eng.plan(Seed("Seed", "Seed Artist"))
     assert plan.primary.track.title == "Other"
     assert "trying the other sources too" in plan.notes
+
+
+def test_the_choice_is_traced_step_by_step(tmp_path):
+    src = StaticSource([cand("One", "A1"), cand("Two", "A2"), cand("Two", "A2"), cand("Seed", "Seed Artist")],
+                       name="lastfm")
+    eng = make_engine(tmp_path, [src, StaticSource([cand("X", "Y")], name="deezer")],
+                      {"shuffle": {"strategy": "top", "lookahead": 2}})
+    plan = eng.plan(Seed("Seed", "Seed Artist"))
+    rows = eng.trace.flat()
+    labels = [n.label for _, n, _, _ in rows]
+    details = {n.label: n.detail for _, n, _, _ in rows}
+    assert labels[0] == "after Seed — Seed Artist" and eng.trace.finished is not None
+    assert "sources" in labels and "lastfm" in labels and "deezer" in labels
+    assert details["deezer"] == "not needed"                              # the first source gave enough
+    assert "4 → 2" in details["pool"] and "repeats in the radio" in details["pool"]
+    assert any(l.startswith("order: top") for l in labels) and "find on TIDAL" in labels
+    assert labels[-1] == f"pick: {plan.picks[0].track.label()}"
+    assert all(n.status != "running" for _, n, _, _ in rows)              # everything ended

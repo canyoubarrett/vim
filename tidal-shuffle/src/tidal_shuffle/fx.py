@@ -62,7 +62,7 @@ _BIT_AT = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
 
 
 class Backdrop:
-    """Rain behind the panels, over a night-sky gradient.
+    """Rain behind the panels, over the panels' own colour.
 
     Two depths: far drops dim, short and slow, near drops brighter, longer and
     faster, all slanting a little in the wind. They are drawn in braille dots
@@ -95,12 +95,9 @@ class Backdrop:
             self._density = target                # first frame: no easing from nothing
         else:
             self._density += (target - self._density) * min(1.0, dt / 3.0)
-        # a sky close to the panels' own colour, so the rain blends in with them
-        top, bottom = (lerp(p["crust"], p["base"], 0.6), p["base"]) if not self.light else (p["base"], p["mantle"])
-        rows = []
-        for y in range(h):
-            bg = lerp(top, bottom, y / max(1, h - 1))
-            rows.append([[" ", None, False, bg] for _ in range(w)])
+        # one even colour, the panels' own, so the rain is the only thing between them
+        bg = p["base"]
+        rows = [[[" ", None, False, bg] for _ in range(w)] for _ in range(h)]
         # faint by default: each drop only a little lighter than the sky right behind it
         v = self.visibility
         def grey(c):                              # the colour without its tint
@@ -216,10 +213,12 @@ class Canvas:
                     cfg = fg or self.text
                     if opacity < 0.999:
                         nbg = lerp(sky, cbg, opacity)
-                        if ch == " ":
+                        if ch == " " and opacity < 0.85:
                             # a faded panel lets what is under it show, dimmed by the panel
                             row[cx] = [under[0], lerp(nbg, under[1] or nbg, 1 - opacity) if under[1] else None,
                                        under[2], nbg]
+                        elif ch == " ":
+                            row[cx] = [" ", None, False, nbg]       # nearly opaque: hides what is under it
                         else:
                             row[cx] = [ch, lerp(nbg, cfg, opacity), bold, nbg]
                     else:

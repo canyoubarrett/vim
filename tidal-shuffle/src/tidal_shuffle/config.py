@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -87,7 +88,7 @@ class UiConfig:
     lyrics: bool = True           # look up lyrics for the song playing
     lyrics_sources: list[str] = field(default_factory=lambda: ["tidal", "lrclib"])
     visualizer: bool = True       # the floating Alter Era logo next to the lyrics
-    theme: str = "mocha"          # Catppuccin flavor: mocha | macchiato | frappe | latte
+    theme: str = "mocha"          # mocha | macchiato | frappe | latte | nord | dracula | gruvbox | ... (see README)
     color: str = "auto"           # auto | truecolor | 256 | 16: force it if the terminal under-reports
     logo_file: str = ""           # an .svg (traced into braille) or ---BIG--- / ---SMALL--- braille art
     cell_aspect: float = 0.5      # a terminal cell's width / height, so the logo keeps its proportions
@@ -99,6 +100,8 @@ class UiConfig:
     logo_motion: str = "float"    # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
     lyrics_lead: float = 0.55     # show the line being sung, and its words, this many seconds early
     lyrics_ahead: str = "hide"    # lines not sung yet: hide | dim | show
+    party: bool = False           # party mode: every logo colour and motion, cycling
+    shuffle_view: str = "off"     # the shuffle tree: off | logo (in place of the logo) | side (of Up next)
     glass: float = 0.22           # how much of the rain shows through the panels (0 = none)
     track_poll: float = 0.5       # how often to check for a new song while the screen is up (s)
     mouse: bool = True            # click the key chips and presets (hold Option/Fn to select text)
@@ -363,7 +366,10 @@ ui:
   lyrics: true              # synced lyrics from TIDAL, then LRCLIB (free, no key)
   lyrics_sources: [tidal, lrclib]
   visualizer: true          # the floating Alter Era logo next to the lyrics
-  theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
+  theme: mocha              # Catppuccin mocha | macchiato | frappe | latte, nord, dracula, gruvbox,
+                            # gruvbox-light, tokyo-night, tokyo-storm, solarized-dark, solarized-light,
+                            # one-dark, rose-pine, rose-pine-moon, rose-pine-dawn, everforest, kanagawa,
+                            # monokai, github-dark  (also in the Esc menu)
   color: auto               # auto | truecolor | 256 | 16 (force it if colours look wrong or missing)
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
@@ -376,6 +382,8 @@ ui:
   logo_motion: float        # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
   lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
   lyrics_ahead: hide        # lines not sung yet: hide | dim | show
+  party: false              # party mode: the logo cycles through every colour and motion
+  shuffle_view: "off"       # watch the next song being chosen: off | logo | side  (t toggles)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up
   mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)
@@ -401,6 +409,19 @@ presets:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def _as_theme(v, name: str) -> str:
+    """A theme name: "Rosé Pine Moon", "tokyo_night" and "frappé" are all fine."""
+    from .theme import THEMES
+
+    key = re.sub(r"[\s_]+", "-", str(v).strip().lower().replace("é", "e"))
+    key = {"catppuccin": "mocha", "catppuccin-mocha": "mocha", "catppuccin-macchiato": "macchiato",
+           "catppuccin-frappe": "frappe", "catppuccin-latte": "latte", "tokyonight": "tokyo-night",
+           "rosepine": "rose-pine", "gruvbox-dark": "gruvbox", "github": "github-dark", "onedark": "one-dark"}.get(key, key)
+    if key not in THEMES:
+        raise ConfigError(f"{name}: unknown theme {v!r}; one of {', '.join(THEMES)}")
+    return key
+
+
 def deep_merge(base: Mapping, override: Mapping) -> dict:
     out: dict = copy.deepcopy(dict(base))
     for k, v in (override or {}).items():
@@ -648,7 +669,7 @@ def _build(data: Mapping) -> AppConfig:
         "lyrics_sources": lambda v, n: [_as_choice(x, n, ("tidal", "lrclib")) for x in (v if isinstance(v, list) else str(v).split(","))],
         "visualizer": _as_bool,
         "color": lambda v, n: _as_choice(str(v).lower(), n, ("auto", "truecolor", "256", "16")),
-        "theme": lambda v, n: _as_choice(str(v).lower().replace("é", "e"), n, ("mocha", "macchiato", "frappe", "latte")),
+        "theme": lambda v, n: _as_theme(v, n),
         "logo_file": lambda v, n: str(v or ""),
         "cell_aspect": lambda v, n: _as_number(v, n, float, 0.2, 1.25),
         "artwork": _as_bool,
@@ -658,9 +679,11 @@ def _build(data: Mapping) -> AppConfig:
         "logo_style": lambda v, n: _as_choice(str(v).lower(), n, ("theme", "muted", "filled", "wireframe", "pastel",
                                                                  "neon", "sunset", "ocean", "catppuccin", "mono")),
         "logo_motion": lambda v, n: _as_choice(str(v).lower(), n, ("float", "gentle", "lively", "shapes", "tide",
-                                                                  "topple", "jelly", "magnet", "still")),
+                                                                  "topple", "jelly", "magnet", "party", "still")),
         "lyrics_lead": lambda v, n: _as_number(v, n, float, -1.0, 3.0),
         "lyrics_ahead": lambda v, n: _as_choice(str(v).lower(), n, ("hide", "dim", "show")),
+        "party": _as_bool,
+        "shuffle_view": lambda v, n: _as_choice(str(v).lower(), n, ("off", "logo", "side")),
         "glass": lambda v, n: _as_number(v, n, float, 0.0, 0.6),
         "track_poll": lambda v, n: _as_number(v, n, float, 0.2, 10),
         "mouse": _as_bool,

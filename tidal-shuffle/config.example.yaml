@@ -99,7 +99,10 @@ ui:
   lyrics: true              # synced lyrics from TIDAL, then LRCLIB (free, no key)
   lyrics_sources: [tidal, lrclib]
   visualizer: true          # the floating Alter Era logo next to the lyrics
-  theme: mocha              # Catppuccin flavor: mocha | macchiato | frappe | latte
+  theme: mocha              # Catppuccin mocha | macchiato | frappe | latte, nord, dracula, gruvbox,
+                            # gruvbox-light, tokyo-night, tokyo-storm, solarized-dark, solarized-light,
+                            # one-dark, rose-pine, rose-pine-moon, rose-pine-dawn, everforest, kanagawa,
+                            # monokai, github-dark  (also in the Esc menu)
   color: auto               # auto | truecolor | 256 | 16 (force it if colours look wrong or missing)
   logo_file: ""             # your own logo: an .svg, or ---BIG--- / ---SMALL--- braille art
   cell_aspect: 0.5          # terminal cell width / height (lower it if the logo looks too wide)
@@ -112,6 +115,8 @@ ui:
   logo_motion: float        # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
   lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
   lyrics_ahead: hide        # lines not sung yet: hide | dim | show
+  party: false              # party mode: the logo cycles through every colour and motion
+  shuffle_view: "off"       # watch the next song being chosen: off | logo | side  (t toggles)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up
   mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)

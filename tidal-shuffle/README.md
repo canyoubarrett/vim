@@ -86,7 +86,7 @@ simply follows your choice.
   next pick, and the flow with its target energy as a meter;
 * the title in the logo's colours (sun yellow, peach, coral, purple, cyan,
   teal), the gradient drifting slowly along it;
-* behind everything, rain: two depths of drops, the far ones dim and slow,
+* behind everything, one even colour (the panels' own) and rain: two depths of drops, the far ones dim and slow,
   the near ones brighter and faster, slanting a little in the wind, drawn in
   braille dots so they fall smoothly. It is a drizzle for calm songs and
   heavier for energetic ones (following the flow's target energy), and it
@@ -152,10 +152,32 @@ colours, check Terminal's profile, and that `NO_COLOR` is not set in your
 shell (`run` also says so in its log). iTerm2, Ghostty, WezTerm and kitty
 announce true colour and show the exact colours.
 
-**Settings menu.** Press Esc (or click `esc settings`) for the settings,
-chosen with ↑ ↓ and Enter or a click, applied at once and remembered
-between runs (in `~/.config/tidal-shuffle/ui.json`; they override the
-config file's `ui:` section):
+**Settings menu.** Press Esc (or click `esc settings`) for the settings.
+The menu takes the left half and a live preview the right: whatever the
+cursor is on is shown at once (a theme recolours the whole screen, a logo
+colour or motion plays in the preview, the shuffle tree shows the choice
+being made), Enter or a click chooses it, and Esc puts back whatever was
+only previewed. Choices are remembered between runs (in
+`~/.config/tidal-shuffle/ui.json`; they override the config file's `ui:`
+section):
+
+* **Theme** for the whole screen (`ui.theme`), blending smoothly from one to
+  the next: Catppuccin Mocha, Macchiato, Frappé and Latte, Nord, Dracula,
+  Gruvbox and Gruvbox Light, Tokyo Night and Tokyo Night Storm, Solarized
+  Dark and Light, One Dark, Rosé Pine, Rosé Pine Moon and Rosé Pine Dawn,
+  Everforest, Kanagawa, Monokai, GitHub Dark;
+* **Party mode** (`ui.party`): the logo glides through every colour scheme,
+  each shape a little behind the next so the colours ripple across it, while
+  its pieces drift apart and back together and now and then topple;
+* **Shuffle tree** (`ui.shuffle_view`, or `t`): watch the next song being
+  chosen, in place of the logo or of the Up next card. The tree unfolds step
+  by step as the work happens: the song it starts from, each source asked
+  (how many songs, how long, or why it was skipped), the pool and what was
+  left out (repeats, songs just played, look-alikes), the flow and its
+  target energy, the order and the top candidates with their scores, each
+  candidate looked up on TIDAL (found, or why not: not on TIDAL, heard
+  recently, same artist as now, explicit, too long), and the pick with its
+  backups;
 
 * **Logo colours**: the theme's lilac, a muted grey one, the logo's own
   colours filled in (drawn with quarter blocks, with dark edges) or as
@@ -163,9 +185,9 @@ config file's `ui:` section):
   accents, or black and white (`ui.logo_style`);
 * **Logo motion** (`ui.logo_motion`): float, gentle, lively, still;
   shapes (every shape floats on its own); tide (slowly drifts apart and
-  back together); topple (it stays upright a while, then leans far over and
-  falls apart as it leans, the upper pieces furthest, and swings back
-  together as it rights itself); jelly (the pieces hang on springs, lag
+  back together); topple (a long, even sway: as it leans over the pieces
+  slide away, each following the lean a little late, the upper ones
+  furthest, and they roll back together as it rights itself); jelly (the pieces hang on springs, lag
   behind the logo's movement and wobble); magnet (pushed apart now and then,
   snapping back). The pieces move on damped springs, so they have weight:
   they trail behind, overshoot a little and settle; and switching eases

@@ -485,7 +485,7 @@ def test_rain_behind_the_panels():
     assert len(rows) == 30 and all(len(r) == 80 for r in rows)
     drops = [c for r in rows for c in r if "⠀" < c[0] <= "⣿"]
     assert len(drops) > 80 and all(c[0] in "⠀⣿" or "⠀" < c[0] <= "⣿" or c[0] == " " for r in rows for c in r)
-    assert rows[0][0][3] != rows[-1][0][3]                               # night-sky gradient
+    assert {c[3] for r in rows for c in r} == {MOCHA.p["base"]}            # one even colour, the panels' own
     calm = Backdrop(MOCHA.p).frame(80, 30, 1.0, energy=0.0)
     wild = Backdrop(MOCHA.p).frame(80, 30, 1.0, energy=1.0)
     count = lambda g: sum(1 for r in g for c in r if c[0] != " ")
@@ -655,7 +655,7 @@ def test_escape_opens_the_settings_and_choices_apply_and_persist(tmp_path):
     frame()
     assert tui.handle_input("escape") and tui.settings_open
     out = frame(10)
-    assert "Settings" in out and "LOGO COLOURS" in out and "Logo colours, filled" in out
+    assert "Settings" in out and "THEME" in out and "Nord" in out and "Preview" in out
     filled = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("logo_style", "filled"))
     while tui.settings_cursor < filled:
         tui.handle_input("down")
@@ -664,8 +664,14 @@ def test_escape_opens_the_settings_and_choices_apply_and_persist(tmp_path):
     assert uistate.load(tui.settings_path)["logo_style"] == "filled"
     # clicking a choice applies it too
     out = frame()
-    y, x = find_row(out, "Shapes")
+    y, x = find_row(out, "Pastel, filled")                 # clicking a choice applies it too
     tui.handle_input(f"click:{x + 1}:{y + 1}")
+    assert tui.config.ui.logo_style == "pastel"
+    shapes = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("logo_motion", "shapes"))
+    while tui.settings_cursor < shapes:
+        tui.handle_input("down")
+    tui.handle_input("enter")
+    frame()
     assert tui.config.ui.logo_motion == "shapes" and tui.scene.motion == "shapes"
     assert tui.handle_input("escape") and not tui.settings_open
     # p and Esc: one menu at a time
@@ -774,22 +780,46 @@ def test_glass_is_tinted_by_the_sky_not_by_panels_underneath():
 
 def test_topple_falls_apart_as_it_leans_and_comes_back_together():
     scene = LogoScene(motion="topple")
-    spread = []
-    for i in range(int(18 * 12)):
+    rows = []
+    for i in range(int(24 * 12)):
         scene.frame(50, 24, i / 12)
-        lean = abs(scene.lean())
-        apart = max((abs(v[0]) + abs(v[1]) for v in scene._phys.values()), default=0.0)
-        spread.append((lean, apart))
-    leaning = [a for l, a in spread if l > 0.8]
-    upright = [a for l, a in spread[60:] if l < 0.05]
+        apart = max(abs(scene.topple_offset(n)[0]) + abs(scene.topple_offset(n)[1]) for n in scene._shape_centre)
+        rows.append((abs(scene.lean()), apart))
+    leaning = [a for l, a in rows if l > 0.9]
+    upright = [a for l, a in rows[24:] if l < 0.05]
     assert leaning and upright and min(leaning) > 3 * max(upright)
-    assert max(a for _, a in spread) > 20                 # well apart, in SVG units
+    assert max(a for _, a in rows) > 30                    # well apart, in SVG units
+    # fluid: the pieces move a little each frame, never a jump
+    steps = [abs(b - a) for (_, a), (_, b) in zip(rows, rows[1:])]
+    assert max(steps) < 4.0
+    # the upper pieces follow the lean later than the tip
+    scene._motion_t = 3.0
+    sun, dart = scene.topple_offset("sun"), scene.topple_offset("dart")
+    assert abs(sun[0]) != abs(dart[0])
+
+
+def test_party_mode_cycles_colours_and_comes_apart():
+    from tidal_shuffle.visualizer import party_color
+
+    scene = LogoScene(motion="party", style="filled", bg=MOCHA.bg)
+    scene.party_colors = True
+    seen, pieces = set(), []
+    for i in range(int(30 * 12)):
+        g = scene.frame(40, 20, i / 12)
+        if i % 12 == 0:
+            seen |= {c[1] for r in g for c in r if len(c) > 1 and c[1]}
+        pieces.append(scene.pieces_now())
+    assert len(seen) > 40                                  # many colours over time
+    assert max(pieces) > 0.9 and min(pieces[60:]) < 0.1    # apart and together
+    a, b = party_color("sun", 2.0, 0.0), party_color("sun", 2.05, 0.0)
+    assert sum(abs(x - y) for x, y in zip(a, b)) < 30       # gliding, not jumping
+    assert party_color("sun", 2.0, 0.0) != party_color("sun", 2.0, 0.35)   # each shape a little behind
 
 
 def test_spring_motions_lag_behind_and_never_jump():
     from tidal_shuffle.visualizer import MOTIONS
 
-    for motion in ("jelly", "magnet", "topple", "tide"):
+    for motion in ("jelly", "magnet", "tide"):
         scene = LogoScene(motion=motion)
         prev = None
         for i in range(240):
@@ -829,3 +859,88 @@ def test_more_logo_colour_schemes():
         for i in range(25):
             g = scene.frame(40, 20, i / 10)
         assert sum(1 for r in g for c in r if c[0] != " " or (len(c) > 3 and c[3])) > 40
+
+
+
+def test_cycling_through_settings_previews_them_and_esc_puts_them_back(tmp_path):
+    from tidal_shuffle.tui import SETTING_ITEMS
+
+    tui, frame, clock = stepping_tui(None)
+    tui.settings_path = tmp_path / "ui.json"
+    frame()
+    tui.handle_input("escape")
+    nord = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("theme", "nord"))
+    while tui.settings_cursor < nord:
+        tui.handle_input("down")
+    frame(12)                                              # the theme blends over 0.6 s
+    assert tui.th.name == "nord" and tui.config.ui.theme == "mocha"    # previewed, not chosen
+    sunset = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("logo_style", "sunset"))
+    while tui.settings_cursor < sunset:
+        tui.handle_input("down")
+    frame(12)
+    assert tui.scene.style == "sunset" and tui.th.name == "mocha"   # only what the cursor is on is previewed
+    tui.handle_input("enter")                              # chosen
+    tui.handle_input("escape")
+    frame(12)
+    assert tui.config.ui.logo_style == "sunset" and tui.scene.style == "sunset" and tui.th.name == "mocha"
+
+
+def test_theme_changes_blend_smoothly():
+    from tidal_shuffle.theme import theme
+
+    tui, frame, clock = stepping_tui(None)
+    frame()
+    tui.config.ui.theme = "dracula"
+    seen = []
+    for _ in range(10):
+        frame()
+        seen.append(tui.th.bg)
+    assert seen[-1] == theme("dracula").bg and len(set(seen)) > 3       # through in-between colours
+
+
+def test_all_themes_render(tmp_path):
+    from tidal_shuffle.theme import THEMES, theme
+
+    for name in THEMES:
+        tui = make_tui(None)
+        tui.config.ui.theme = name
+        out, svg = render(tui, 100, 30)
+        assert "Midnight City" in out and "display error" not in out
+        th = theme(name)
+        assert ("#%02x%02x%02x" % th.p["base"]) in svg.lower()
+
+
+def test_shuffle_tree_unfolds_and_follows_the_choice():
+    from tidal_shuffle.trace import Trace
+
+    tui, frame, clock = stepping_tui(None)
+    tr = Trace("after Midnight City — M83", "radio · weighted", clock=lambda: clock["t"])
+    src = tr.add(None, "sources", status="running")
+    tr.add(src, "spotify-app", "source", "asking…", "running")
+    tui.loop.engine = types.SimpleNamespace(trace=tr)
+    tui.config.ui.shuffle_view = "logo"
+    out = frame()
+    assert "Shuffle tree" in out and "after Midnight City" in out
+    out = frame(5)
+    assert "spotify-app" in out and "asking" in out                     # unfolded, step by step
+    tr.update(src, status="done", detail="30 songs")
+    pick = tr.add(None, "pick: Strangers — Kosheen", "pick", "backups: Teardrop", "done")
+    tr.finish("done")
+    out = frame(6)
+    assert "▶ pick: Strangers — Kosheen" in out and "└─" in out and "├─" in out
+    assert tui.handle_input("tree") and tui.config.ui.shuffle_view == "off"
+    assert tui.handle_input("tree") and tui.config.ui.shuffle_view == "logo"
+
+
+def test_party_setting_drives_the_logo():
+    from tidal_shuffle.tui import SETTING_ITEMS
+
+    tui, frame, clock = stepping_tui(None)
+    frame()
+    on = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("party", True))
+    tui.apply_setting(on)
+    frame()
+    assert tui.scene.party_colors and tui.scene.motion == "party"
+    tui.apply_setting(on - 1)
+    frame()
+    assert not tui.scene.party_colors and tui.scene.motion == "float"

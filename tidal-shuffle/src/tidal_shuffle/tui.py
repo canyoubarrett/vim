@@ -47,10 +47,21 @@ KEYS_LINE = "space play/pause · n next pick · f flow · p presets · l lyrics 
 # toolbar chips: (key, label, action); actions "cmd:<loop command>" or "ui:<screen action>"
 CHIPS = [("space", "play/pause", "cmd:playpause"), ("n", "next", "cmd:next"), ("f", "flow", "cmd:flow"),
          ("p", "presets", "ui:presets"), ("l", "lyrics", "ui:view"), ("a", "cover", "ui:art"),
-         ("esc", "settings", "ui:settings"), ("q", "quit", "cmd:quit")]
+         ("t", "tree", "ui:tree"), ("esc", "settings", "ui:settings"), ("q", "quit", "cmd:quit")]
 
 # The settings menu (Esc): (section, ui setting, [(value, label, description)])
+def _theme_items() -> list:
+    from .theme import THEME_LABELS, THEMES
+
+    return [(name, THEME_LABELS.get(name, name), "") for name in THEMES]
+
+
 SETTINGS = [
+    ("Theme", "theme", _theme_items()),
+    ("Party mode", "party", [
+        (False, "Off", ""),
+        (True, "On", "every logo colour and motion, gliding, apart and together"),
+    ]),
     ("Logo colours", "logo_style", [
         ("theme", "Theme", "the theme's lilac, breathing"),
         ("muted", "Muted", "softer and greyer"),
@@ -74,6 +85,11 @@ SETTINGS = [
         ("magnet", "Magnet", "pushed apart now and then, snapping back"),
         ("still", "Still", "no motion"),
     ]),
+    ("Shuffle tree", "shuffle_view", [
+        ("off", "Off", ""),
+        ("logo", "In place of the logo", "watch the next song being chosen (t)"),
+        ("side", "In place of Up next", "in a wide window"),
+    ]),
     ("Rain", "rain", [
         (0.0, "Off", ""), (0.3, "Faint", "barely there"), (0.6, "Soft", ""), (1.0, "Clear", ""),
     ]),
@@ -91,6 +107,9 @@ SETTINGS = [
 ]
 SETTING_ITEMS = [(key, value, label, desc, section) for section, key, values in SETTINGS
                  for value, label, desc in values]
+# settings shown live in the preview while the cursor is on them
+PREVIEWED = ("theme", "party", "logo_style", "logo_motion", "shuffle_view", "rain")
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # the Alter Era logo's colours, for the title
 TITLE_COLORS = [(253, 192, 0), (250, 167, 110), (243, 124, 104), (136, 128, 222), (0, 255, 230), (10, 180, 155)]
@@ -489,12 +508,19 @@ class ShuffleTUI:
         self.scene = scene
         ui = getattr(config, "ui", None)
         self.settings_path = settings_path
+        self._preview: dict = {}          # setting -> value shown while the settings cursor is on it
+        self._applied: dict = {}          # what the screen shows now, per previewed setting
+        self._theme_from = self._theme_to = self.th
+        self._theme_since = -1e9
+        self._tree_seen: dict = {}        # trace node index -> when it unfolded (per trace)
+        self._tree_id = None
+        self._tree_last = 0.0
         self.settings_open = False
         self.settings_cursor = 0
         self._settings = [0.0, 0.0]
         self._settings_hits: list = []
         self._apply_logo_style()
-        self.backdrop = (Backdrop(self.th.p, light=self.th.name == "latte", visibility=float(getattr(ui, "rain", 0.3)))
+        self.backdrop = (Backdrop(self.th.p, light=self.th.light, visibility=float(getattr(ui, "rain", 0.3)))
                          if getattr(ui, "backdrop", True) else None)
         self.glass = float(getattr(ui, "glass", 0.22))
         # transitions: (value, velocity) springs, so nothing ever jumps
@@ -543,15 +569,20 @@ class ShuffleTUI:
         sc = self.scene
         if sc is None:
             return
-        ui = getattr(self.config, "ui", None)
         th, p = self.th, self.th.p
         from .visualizer import MOTIONS, STYLES, logo_palette
 
-        style = getattr(ui, "logo_style", "theme")
+        sc.logo, sc.glow, sc.shadow, sc.bg = th.logo, th.logo_glow, th.shadow, th.bg
+        sc.theme_palette = p
+        style = self.setting("logo_style") or "theme"
         sc.style = style if style in STYLES else "theme"
-        motion = getattr(ui, "logo_motion", "float")
+        motion = self.setting("logo_motion") or "float"
         sc.motion = motion if motion in MOTIONS else "float"
         sc.colors = logo_palette(sc.style, p)
+        party = bool(self.setting("party"))
+        sc.party_colors = party
+        if party:
+            sc.motion = "party"
         if style == "muted":
             sc.logo, sc.glow = lerp(th.logo, p["overlay1"], 0.55), lerp(th.logo_glow, p["overlay2"], 0.5)
         elif style == "mono":
@@ -561,10 +592,54 @@ class ShuffleTUI:
             sc.logo, sc.glow = th.logo, th.logo_glow
 
     def setting(self, key: str):
+        """A setting as the screen should show it: the one being previewed, else the chosen one."""
+        if key in self._preview:
+            return self._preview[key]
         return getattr(getattr(self.config, "ui", None), key, None)
 
+    def chosen(self, key: str):
+        return getattr(getattr(self.config, "ui", None), key, None)
+
+    def _sync_settings(self, now: float) -> None:
+        """Bring the screen in line with the settings (chosen or previewed):
+        themes blend into each other, the logo eases into its new look."""
+        from .theme import blend, theme as make
+
+        name = self.setting("theme") or "mocha"
+        if self._applied.get("theme") != name:
+            if self._applied.get("theme") is not None:
+                self._theme_from = self.th
+                self._theme_since = now
+            self._theme_to = make(name)
+            self._applied["theme"] = name
+        k = smoothstep((now - self._theme_since) / 0.6)
+        th = blend(self._theme_from, self._theme_to, k) if k < 1 else self._theme_to
+        if th is not self.th:
+            self.th = th
+            if len(_STYLES) > 6000:
+                _STYLES.clear()
+            if self.backdrop is not None:
+                self.backdrop.p, self.backdrop.light = th.p, th.light
+            self._applied.pop("logo", None)
+        logo = (self.setting("logo_style"), self.setting("logo_motion"), bool(self.setting("party")), th.name)
+        if self._applied.get("logo") != logo:
+            self._apply_logo_style()
+            self._applied["logo"] = logo
+        rain = self.setting("rain")
+        if rain is not None and self._applied.get("rain") != rain:
+            if self.backdrop is None and rain > 0:
+                self.backdrop = Backdrop(th.p, light=th.light, visibility=rain)
+            elif self.backdrop is not None:
+                self.backdrop.visibility = rain
+            self._applied["rain"] = rain
+
+    def _preview_cursor(self) -> None:
+        """Show the setting under the cursor, live, without choosing it yet."""
+        key, value = SETTING_ITEMS[self.settings_cursor][:2]
+        self._preview = {key: value} if key in PREVIEWED else {}
+
     def is_current(self, key: str, value) -> bool:
-        cur = self.setting(key)
+        cur = self.chosen(key)
         if isinstance(value, float) and isinstance(cur, (int, float)):
             return abs(cur - value) < 1e-6
         return cur == value
@@ -574,6 +649,11 @@ class ShuffleTUI:
         cur = next((i for i, it in enumerate(SETTING_ITEMS) if self.is_current(it[0], it[1])), 0)
         self.settings_cursor = cur
         self.settings_open = True
+        self._preview = {}
+
+    def close_settings(self) -> None:
+        self.settings_open = False
+        self._preview = {}                 # what was only previewed goes back to what was chosen
 
     def apply_setting(self, index: int) -> None:
         """Apply one choice of the settings menu, at once, and remember it."""
@@ -586,15 +666,26 @@ class ShuffleTUI:
         if ui is None:
             return
         setattr(ui, key, value)
-        if key in ("logo_style", "logo_motion"):
-            self._apply_logo_style()
-        elif key == "rain":
-            if self.backdrop is None and value > 0:
-                self.backdrop = Backdrop(self.th.p, light=self.th.name == "latte", visibility=value)
-            elif self.backdrop is not None:
-                self.backdrop.visibility = value
+        self._preview.pop(key, None)
+        self._sync_settings(self._clock())
         uistate.save(self.settings_path, {k: getattr(ui, k) for k in uistate.KEYS if hasattr(ui, k)})
         self.log(f"{section}: {label}")
+
+    def toggle_tree(self) -> None:
+        """Show or hide the shuffle tree (t), where it was last shown."""
+        from . import uistate
+
+        ui = getattr(self.config, "ui", None)
+        if ui is None:
+            return
+        now = self.chosen("shuffle_view") or "off"
+        if now == "off":
+            ui.shuffle_view = getattr(self, "_tree_place", "logo")
+        else:
+            self._tree_place = now
+            ui.shuffle_view = "off"
+        uistate.save(self.settings_path, {k: getattr(ui, k) for k in uistate.KEYS if hasattr(ui, k)})
+        self.log("showing the shuffle tree" if ui.shuffle_view != "off" else "hiding the shuffle tree")
 
     def toggle_cover(self) -> None:
         self.cover_view = not self.cover_view
@@ -628,9 +719,11 @@ class ShuffleTUI:
             self.toggle_cover()
         elif kind == "ui" and arg == "settings":
             if self.settings_open:
-                self.settings_open = False
+                self.close_settings()
             else:
                 self.open_settings()
+        elif kind == "ui" and arg == "tree":
+            self.toggle_tree()
         elif kind == "set":
             self.settings_cursor = int(arg)
             self.apply_setting(int(arg))
@@ -661,6 +754,9 @@ class ShuffleTUI:
         if cmd == "art":
             self.toggle_cover()
             return True
+        if cmd == "tree":
+            self.toggle_tree()
+            return True
         if cmd == "escape" and not self.menu_open:
             self.act("ui:settings")                   # Esc opens and closes the settings
             return True
@@ -668,12 +764,14 @@ class ShuffleTUI:
             n = len(SETTING_ITEMS)
             if cmd in ("up", "wheel-up"):
                 self.settings_cursor = max(0, self.settings_cursor - 1)
+                self._preview_cursor()
             elif cmd in ("down", "wheel-down"):
                 self.settings_cursor = min(n - 1, self.settings_cursor + 1)
+                self._preview_cursor()
             elif cmd == "enter":
                 self.apply_setting(self.settings_cursor)
             elif cmd == "quit":
-                self.settings_open = False
+                self.close_settings()
             elif cmd in ("left", "right"):
                 pass
             else:
@@ -886,6 +984,64 @@ class ShuffleTUI:
         return self._panel(GridView(lambda w, h: scene.frame(w, h, self._clock(), playing=live)), caption,
                            padding=(0, 0))
 
+    def current_trace(self):
+        engine = getattr(self.loop, "engine", None)
+        return getattr(engine, "trace", None)
+
+    def tree_lines(self, width: int, height: int) -> Text:
+        """The choice of the next song as a tree, unfolding one step at a time
+        (each step appears in turn, fading in) and following the work live."""
+        th, p = self.th, self.th.p
+        tr = self.current_trace()
+        text = Text(no_wrap=True, overflow="ellipsis")
+        if tr is None:
+            text.append("\n  waiting for the next song to be chosen…", style(th.faint))
+            return text
+        now = self._clock()
+        if self._tree_id != id(tr):
+            self._tree_id, self._tree_seen, self._tree_last = id(tr), {}, now - 1.0
+        rows = tr.flat()
+        for i in range(len(rows)):
+            if i not in self._tree_seen:          # unfold: one new step every 0.12 s at most
+                at = max(now, self._tree_last + 0.12)
+                self._tree_seen[i] = at
+                self._tree_last = at
+        shown = [(i, r) for i, r in enumerate(rows) if self._tree_seen[i] <= now]
+        if len(shown) > height:                   # keep the start and the latest steps
+            shown = shown[:1] + shown[-(height - 1):]
+        icons = {"done": ("✓", p["green"]), "failed": ("✗", p["red"]), "skipped": ("·", th.faint)}
+        for n, (i, (depth, node, last, lasts)) in enumerate(shown):
+            k = smoothstep((now - self._tree_seen[i]) / 0.35)      # fades in
+            if n:
+                text.append("\n")
+            branch = "".join("   " if l else "│  " for l in lasts[1:]) + (("└─ " if last else "├─ ") if depth else "")
+            text.append(branch, style(lerp(th.bg, th.border, k)))
+            if node.status == "running":
+                icon, col = SPINNER[int(now * 10) % len(SPINNER)], p["yellow"]
+            elif node.kind == "pick" and node.status == "done":
+                icon, col = "▶", p["mauve"]
+            else:
+                icon, col = icons.get(node.status, ("·", th.faint))
+            text.append(icon + " ", style(lerp(th.bg, col, k), True))
+            label_col = th.text if node.kind in ("seed", "step", "pick") else th.subtle
+            if node.status == "skipped":
+                label_col = th.faint
+            text.append(node.label, style(lerp(th.bg, label_col, k), node.kind in ("seed", "step", "pick")))
+            if node.detail:
+                text.append("  " + node.detail, style(lerp(th.bg, th.faint if node.kind != "pick" else th.subtle, k)))
+        return text
+
+    def tree_panel(self, title: str = "Shuffle tree") -> Panel:
+        tr = self.current_trace()
+        sub = "choosing…" if tr is not None and tr.finished is None else ""
+        tui = self
+
+        class _Tree:
+            def __rich_console__(self, console, options):
+                h = options.height or options.max_height or 10
+                yield tui.tree_lines(options.max_width, h)
+        return self._panel(_Tree(), title, subtitle=sub)
+
     def cover_panel(self) -> Panel:
         """The cover of the song playing, as big as the panel allows (a)."""
         from .artwork import placeholder
@@ -970,6 +1126,7 @@ class ShuffleTUI:
         dt = 0.0 if self._last_frame is None else now - self._last_frame
         first = self._last_frame is None
         self._last_frame = now
+        self._sync_settings(now)
         want, status = self.wanted_lyrics()
         self._status = status
         snap = first or dt <= 0                      # nothing to animate from: be there
@@ -1138,7 +1295,8 @@ class ShuffleTUI:
                 text.append(mark, style(p["green"], True))
                 text.append(label.ljust(name_w), style(th.text, True))
                 text.append(desc + " \n", style(th.subtle))
-            hits.append((top_row + 1 + 2 + r, 0, 10_000, f"set:{val}"))
+            x0, mw = getattr(self, "_settings_w", (0, 10_000))
+            hits.append((top_row + 1 + 2 + r, x0, x0 + mw, f"set:{val}"))
         self._settings_hits = hits
         return self._panel(text, "Settings", subtitle="esc to close")
 
@@ -1147,10 +1305,12 @@ class ShuffleTUI:
         (fading, over the logo while it glides), Up next, and the preset menu."""
         out = []
         main_w = width
+        view = self.chosen("shuffle_view") or "off"
         if width >= 130:
             side_w = 40
             main_w = width - side_w - gap
-            out.append((self.up_next_panel(), x + main_w + gap, y, side_w, height, 1.0))
+            side = self.tree_panel() if view == "side" else self.up_next_panel()
+            out.append((side, x + main_w + gap, y, side_w, height, 1.0))
         L = max(0.0, min(1.0, self._layout[0]))
         if main_w < 90 or self.scene is None:
             logo_w, lyr_x, lyr_w = main_w, x, main_w      # narrow: the lyrics take the whole width, over the logo
@@ -1158,7 +1318,11 @@ class ShuffleTUI:
             split = int(main_w * 2 / 5)
             logo_w = int(round(main_w + (split - main_w) * L))
             lyr_x, lyr_w = x + split + gap, main_w - split - gap
-        out.insert(0, (self.logo_panel(self.caption() if self._shown is None else "Alter Era"), x, y, logo_w, height, 1.0))
+        if view == "logo" or (view == "side" and width < 130):
+            main = self.tree_panel()
+        else:
+            main = self.logo_panel(self.caption() if self._shown is None else "Alter Era")
+        out.insert(0, (main, x, y, logo_w, height, 1.0))
         c = max(0.0, min(1.0, self._cover[0]))
         if c > 0.01:                                   # the cover fades in over the logo
             out.insert(1, (self.cover_panel(), x, y, logo_w, height, c))
@@ -1169,8 +1333,14 @@ class ShuffleTUI:
                         smoothstep(L / 0.55)))           # the empty glass box comes with the glide
         sm = max(0.0, min(1.0, self._settings[0]))
         if self.settings_open or sm > 0.01:
-            out.append((self.settings_panel(height, y), x, y, width, height,
-                        sm if not self.settings_open else max(sm, 0.02)))
+            op = sm if not self.settings_open else max(sm, 0.02)
+            menu_w = width if width < 70 else max(44, min(66, width // 2))
+            self._settings_w = (x, menu_w)               # for the click areas
+            out.append((self.settings_panel(height, y), x, y, menu_w, height, op))
+            if menu_w < width:                            # a live preview of what the cursor is on
+                key = SETTING_ITEMS[self.settings_cursor][0] if SETTING_ITEMS else ""
+                prev = self.tree_panel("Preview · shuffle tree") if key == "shuffle_view" else self.logo_panel("Preview")
+                out.append((prev, x + menu_w + gap, y, width - menu_w - gap, height, op))
         m = max(0.0, min(1.0, self._menu[0]))
         if self.menu_open or m > 0.01:
             out.append((self.presets_panel(height, y), x, y, width, height, m if not self.menu_open else max(m, 0.02)))
@@ -1265,10 +1435,10 @@ class ShuffleTUI:
 
     def compose(self, console: Console, options: ConsoleOptions, width: int, height: int):
         """The whole screen as Segments: the sky, then the panels over it."""
-        th = self.th
         try:
             set_color_depth(console.color_system)
             self.animate()
+            th = self.th
             playing = self.loop.state.current is not None and self.loop.state.current.playing is not False
             if self.backdrop is not None:
                 cells = self.backdrop.frame(width, height, self._clock(), self.energy(), playing)
@@ -1282,7 +1452,7 @@ class ShuffleTUI:
                 canvas.blit(lines, x, y, w, h, opacity)
             yield from segments(canvas.cells, style)
         except Exception as e:  # never let a render error take the screen down
-            yield from console.render(Text(f"display error: {e}", style(th.text)), options)
+            yield from console.render(Text(f"display error: {e}", style(self.th.text)), options)
 
     def render(self, width: int = 100, height: int = 40):
         """The screen as a renderable of the given size (for previews and tests)."""
