@@ -105,9 +105,9 @@ SETTINGS = [
         (0.0, "Off", ""), (0.3, "Faint", "barely there"), (0.6, "Soft", ""), (1.0, "Clear", ""),
     ]),
     ("Lyrics not sung yet", "lyrics_ahead", [
-        ("hide", "Hidden", "each line appears when it is sung"),
-        ("dim", "Dimmed", "faint until sung"),
         ("show", "Shown", "read ahead"),
+        ("dim", "Dimmed", "faint until sung"),
+        ("hide", "Hidden", "each line appears when it is sung"),
     ]),
     ("Lyrics timing", "lyrics_lead", [
         (0.3, "Later", "if the highlight runs ahead of the singing"),
@@ -546,6 +546,9 @@ class ShuffleTUI:
             from .stages import StageArt
 
             self.stages = StageArt(cover=self._cover_image)
+        from .artwork import drawable_details
+
+        self.details = drawable_details(str(getattr(ui, "block_glyphs", "auto") or "auto"))
         self.setting_items = list(SETTING_ITEMS)
         self.refresh_backdrops()
         self._preview: dict = {}          # setting -> value shown while the settings cursor is on it
@@ -621,7 +624,7 @@ class ShuffleTUI:
         sc.colors = logo_palette(sc.style, p)
         if hasattr(sc, "set_version"):
             sc.set_version(self.setting("logo_version") or "lines")
-        sc.detail = self.setting("logo_detail") or "quadrant"
+        sc.detail = self.detail("logo_detail")
         party = bool(self.setting("party"))
         sc.party_colors = party
         if party:
@@ -639,6 +642,11 @@ class ShuffleTUI:
         if key in self._preview:
             return self._preview[key]
         return getattr(getattr(self.config, "ui", None), key, None)
+
+    def detail(self, key: str) -> str:
+        """A detail setting this terminal can draw (else quarter blocks)."""
+        value = self.setting(key) or "quadrant"
+        return value if value in getattr(self, "details", ()) else "quadrant"
 
     def chosen(self, key: str):
         return getattr(getattr(self.config, "ui", None), key, None)
@@ -665,7 +673,7 @@ class ShuffleTUI:
                 self.backdrop.p, self.backdrop.light = th.p, th.light
             self._applied.pop("logo", None)
         logo = (self.setting("logo_style"), self.setting("logo_motion"), bool(self.setting("party")), th.name,
-                self.setting("logo_version"), self.setting("logo_detail"))
+                self.setting("logo_version"), self.detail("logo_detail"))
         if self._applied.get("logo") != logo:
             self._apply_logo_style()
             self._applied["logo"] = logo
@@ -682,8 +690,18 @@ class ShuffleTUI:
         from .stages import label
 
         names = self.stages.names() if self.stages is not None else []
-        self.setting_items = list(SETTING_ITEMS) + [
-            ("logo_backdrop", n, label(n), "", "Logo backdrop") for n in names]
+        details = getattr(self, "details", None) or ("half", "quadrant", "braille")
+        items = []
+        for item in SETTING_ITEMS:
+            key, value = item[:2]
+            if key in ("picture_detail", "logo_detail"):
+                if value not in details:
+                    continue                   # characters this terminal cannot draw
+                if value == "quadrant" and "sextant" not in details:
+                    item = (key, value, item[2], "quarter blocks, 2×2: the finest solid blocks this terminal "
+                            "draws (Ghostty or kitty go finer)", item[4])
+            items.append(item)
+        self.setting_items = items + [("logo_backdrop", n, label(n), "", "Logo backdrop") for n in names]
 
     def _cover_image(self):
         cur = self.loop.state.current
@@ -1098,7 +1116,7 @@ class ShuffleTUI:
                 dim_now = float(getattr(ui, "backdrop_dim", dim))
                 art = self.stages.cells(name, w, h, self._clock(), th.bg, dim_now, aspect,
                                         key_extra=song if name == "cover" else None, zoom=zoom,
-                                        detail=self.setting("picture_detail") or "quadrant")
+                                        detail=self.detail("picture_detail"))
             # on a stage the logo stands on the floor, fighter-sized; alone it floats, big
             if art is not None:
                 scene.size = float(getattr(ui, "logo_size_stage", 0.55))
@@ -1182,13 +1200,12 @@ class ShuffleTUI:
             img = self.artwork.get(song, cur.tidal_id, cur.title, cur.artist)
         have = img is not None and img != "pending"
         artwork = self.artwork
-        mode = self._art_mode
 
         def grid(w: int, h: int) -> list:
             rows = max(1, min(h, w // 2))                 # square: a cell is about twice as tall as wide
             cols = rows * 2
             if have:
-                pic = artwork.cells(song, img, cols, rows, mode=self.setting("picture_detail") or mode,
+                pic = artwork.cells(song, img, cols, rows, mode=self.detail("picture_detail"),
                                     dither=_DEPTH["system"] == "256")
             else:
                 pic = placeholder(cols, rows, p["mauve"], p["blue"], p["crust"])
@@ -1212,7 +1229,7 @@ class ShuffleTUI:
                 title += " · scrolling by estimate"
         ui = getattr(self.config, "ui", None)
         lead = float(getattr(ui, "lyrics_lead", 0.55))
-        ahead = getattr(ui, "lyrics_ahead", "hide")
+        ahead = getattr(ui, "lyrics_ahead", "show")
         return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th, alpha=alpha, lead=lead,
                                                              ahead=ahead)), title, padding=(0, 0))
 
@@ -1440,11 +1457,10 @@ class ShuffleTUI:
         out = []
         main_w = width
         view = self.chosen("shuffle_view") or "off"
-        if width >= 130:
+        if width >= 130 and view == "side":           # Up next is beside the log; the tree can take this side
             side_w = 40
             main_w = width - side_w - gap
-            side = self.tree_panel() if view == "side" else self.up_next_panel()
-            out.append((side, x + main_w + gap, y, side_w, height, 1.0))
+            out.append((self.tree_panel(), x + main_w + gap, y, side_w, height, 1.0))
         L = max(0.0, min(1.0, self._layout[0]))
         if main_w < 90 or self.scene is None:
             logo_w, lyr_x, lyr_w = main_w, x, main_w      # narrow: the lyrics take the whole width, over the logo
@@ -1497,7 +1513,7 @@ class ShuffleTUI:
         return text
 
     def up_next_compact(self) -> Panel:
-        """Up next for narrow windows: the pick, its backups, then what played."""
+        """Up next, beside the log: the pick, its backups, then what played."""
         th, p = self.th, self.th.p
         st = self.loop.state
         picks = list(getattr(st.plan, "picks", None) or ([st.plan.primary] if st.plan is not None and st.plan.primary
@@ -1601,15 +1617,11 @@ class ShuffleTUI:
             body_y = my + HEADER_H + gap
             body_h = max(3, foot_y - gap - body_y)
             out.extend(self.body_regions(mx, body_y, inner, body_h, gap_x))
-            if inner >= 126 + 4:
-                out.append((self.footer(foot), mx, foot_y, inner, foot, 1.0))
-            else:
-                # no room for the Up next card beside the logo: it shares the log's row instead
-                gap_x = 2 if width >= 100 else 1
-                right = max(28, min(52, int(inner * 0.42)))
-                left = inner - right - gap_x
-                out.append((self.footer(foot), mx, foot_y, left, foot, 1.0))
-                out.append((self.up_next_compact(), mx + left + gap_x, foot_y, right, foot, 1.0))
+            # the bottom row, split in two: the log, and Up next beside it
+            right = max(28, min(64, int(inner * 0.42)))
+            left = inner - right - gap_x
+            out.append((self.footer(foot), mx, foot_y, left, foot, 1.0))
+            out.append((self.up_next_compact(), mx + left + gap_x, foot_y, right, foot, 1.0))
         out.append((self.toolbar(height - 1, width), 0, height - 1, width, 1, 1.0))
         self._hits = ((self._menu_hits if self.menu_open else []) + (self._settings_hits if self.settings_open else [])
                       + self._toolbar_hits)

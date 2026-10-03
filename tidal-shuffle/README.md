@@ -122,8 +122,7 @@ simply follows your choice.
   the logo the whole width, and so does `l`; a narrow window gives the
   lyrics the whole width;
 * **Up next**: the pick and its backups with their energy, and what played
-  recently; in a wide window (130 columns or more) as a card on the right,
-  in a narrower one beside the log, which splits in two to make room;
+  recently, at the bottom beside the log (the bottom row splits in two);
 * at the bottom, the log and a row of key chips, which can be clicked.
 
 Nothing on the screen cuts: when a song ends, a hand-off starts or TIDAL
@@ -186,9 +185,10 @@ section):
   blocks, 2×2), High (sixth blocks, 2×3), Highest (eighth blocks, 2×4: as
   fine as characters go) and Dots (braille, 2×4, grainier). Pictures are
   drawn from the full-size original. High and Highest use newer block
-  characters: Ghostty, kitty, WezTerm and iTerm2 draw them themselves;
-  elsewhere they need a font that has them (if they show as boxes or
-  gaps, step back to Medium). For more pixels still, make the terminal's
+  characters that most fonts lack (Terminal.app shows boxes with question
+  marks), so they are only offered in terminals that draw them themselves:
+  Ghostty and kitty (both), WezTerm and iTerm2 (High). If your font has
+  them, `ui.block_glyphs: all` offers them anyway. For more pixels still, make the terminal's
   font smaller (⌘−): every character is that many more pixels;
 * **Logo version** (`ui.logo_version`): the line drawing, or the flat
   version (solid shapes in the logo's colours, no outlines), and **Logo
@@ -200,7 +200,7 @@ section):
   each shape a little behind the next so the colours ripple across it, while
   its pieces drift apart and back together and now and then topple;
 * **Shuffle tree** (`ui.shuffle_view`, or `t`): watch the next song being
-  chosen, in place of the logo or of the Up next card. The tree unfolds step
+  chosen, in place of the logo, or (130 columns or more) beside it. The tree unfolds step
   by step as the work happens: the song it starts from, each source asked
   (how many songs, how long, or why it was skipped), the pool and what was
   left out (repeats, songs just played, look-alikes), the flow and its
@@ -223,8 +223,8 @@ section):
   they trail behind, overshoot a little and settle; and switching eases
   from one motion into the other;
 * **Rain**: off, faint, soft or clear (`ui.rain`);
-* **Lyrics not sung yet**: hidden (each line appears when it is sung; the
-  default), dimmed, or shown to read ahead (`ui.lyrics_ahead`);
+* **Lyrics not sung yet**: shown to read ahead (the default), dimmed, or
+  hidden until each line is sung (`ui.lyrics_ahead`);
 * **Lyrics timing**: how early the sung words light up, if they lag or run
   ahead of the singing (`ui.lyrics_lead`, 0.55 s by default).
 

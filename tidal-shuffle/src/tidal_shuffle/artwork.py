@@ -221,6 +221,27 @@ OCTANTS = _block_table(0x1CD00, 256, {
 BLOCK_TABLES = {"sextant": SEXTANTS, "octant": OCTANTS}
 
 
+def drawable_details(mode: str = "auto", env: Optional[dict] = None) -> tuple:
+    """The detail levels this terminal shows. Sixth and eighth blocks are new
+    characters that most fonts lack (Terminal.app draws them as boxes with
+    question marks); terminals that draw block characters themselves show
+    them. ``mode``: auto (by terminal), all, or basic (never the new ones)."""
+    import os
+
+    if mode == "all":
+        return DETAILS
+    basic = ("half", "quadrant", "braille")
+    if mode == "basic":
+        return basic
+    env = os.environ if env is None else env
+    prog, term = env.get("TERM_PROGRAM", ""), env.get("TERM", "")
+    if prog == "ghostty" or "ghostty" in term or "kitty" in term or env.get("KITTY_WINDOW_ID"):
+        return DETAILS
+    if prog in ("WezTerm", "iTerm.app"):
+        return ("half", "quadrant", "sextant", "braille")
+    return basic
+
+
 def split_cell(pts: list, table: dict):
     """One cell from its pixels (row by row, two across): the pixels are split
     into two colours along the channel they differ most in, refined once,

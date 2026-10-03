@@ -86,7 +86,7 @@ def test_version_names_the_copy():
 
     from tidal_shuffle.cli import cli
     out = CliRunner().invoke(cli, ["--version"]).output
-    assert out.startswith("tidal-shuffle 0.11.0") and " from " in out
+    assert out.startswith("tidal-shuffle 0.11.1") and " from " in out
 
 
 def test_update_refuses_outside_a_git_clone(monkeypatch):

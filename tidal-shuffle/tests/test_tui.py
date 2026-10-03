@@ -279,7 +279,7 @@ def test_wide_screen_shows_up_next_and_album_art_placeholder():
     tui.history = types.SimpleNamespace(recent=lambda n: [types.SimpleNamespace(title="Intro", artist="The xx",
                                                                                 source="spotify-app")])
     out, svg = render(tui, 150, 40)
-    assert "Up next" in out and "RECENTLY PLAYED" in out and "Intro" in out
+    assert "Up next" in out and "▸ Strangers" in out and "Intro" in out    # beside the log
     assert "▰" in out and "PLAYING" in out and "♪" in out
     assert "display error" not in out
 
@@ -657,7 +657,7 @@ def test_escape_opens_the_settings_and_choices_apply_and_persist(tmp_path):
     assert tui.handle_input("escape") and tui.settings_open
     out = frame(10)
     assert "Settings" in out and "THEME" in out and "Nord" in out and "Preview" in out
-    filled = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("logo_style", "filled"))
+    filled = next(i for i, it in enumerate(tui.setting_items) if it[:2] == ("logo_style", "filled"))
     while tui.settings_cursor < filled:
         tui.handle_input("down")
     tui.handle_input("enter")
@@ -668,7 +668,7 @@ def test_escape_opens_the_settings_and_choices_apply_and_persist(tmp_path):
     y, x = find_row(out, "Pastel, filled")                 # clicking a choice applies it too
     tui.handle_input(f"click:{x + 1}:{y + 1}")
     assert tui.config.ui.logo_style == "pastel"
-    shapes = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("logo_motion", "shapes"))
+    shapes = next(i for i, it in enumerate(tui.setting_items) if it[:2] == ("logo_motion", "shapes"))
     while tui.settings_cursor < shapes:
         tui.handle_input("down")
     tui.handle_input("enter")
@@ -686,7 +686,7 @@ def test_rain_setting_reaches_the_backdrop():
     from tidal_shuffle.tui import SETTING_ITEMS
 
     tui = make_tui(None)
-    off = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("rain", 0.0))
+    off = next(i for i, it in enumerate(tui.setting_items) if it[:2] == ("rain", 0.0))
     tui.apply_setting(off)
     assert tui.backdrop.visibility == 0.0
     tui.backdrop = None
@@ -975,7 +975,7 @@ def test_logo_backdrop_shows_behind_the_logo_and_is_previewed(tmp_path):
     assert tui.config.ui.logo_backdrop == "7 - stage.png" and "▀" in out
 
 
-def test_narrow_window_keeps_up_next_beside_the_log():
+def test_up_next_is_always_beside_the_log():
     tui = make_tui(None)
     pick = tui.loop.state.plan.primary
     tui.loop.state.plan.picks = [pick]
@@ -984,7 +984,8 @@ def test_narrow_window_keeps_up_next_beside_the_log():
     y, _ = find_row(out, "Up next")
     assert "log" in out.splitlines()[y]                   # the same row: the log box, split in two
     wide, _ = render(tui, 150, 40)
-    assert "UP NEXT" not in wide and "RECENTLY PLAYED" in wide   # wide: the card beside the logo instead
+    y, _ = find_row(wide, "Up next")
+    assert "log" in wide.splitlines()[y] and "RECENTLY PLAYED" not in wide   # wide too: always beside the log
 
 
 def test_every_key_stays_on_the_bottom_row_in_a_narrow_window():
@@ -1085,6 +1086,8 @@ def test_logo_size_sliders_and_picture_detail_setting(tmp_path):
     tui.config.ui.logo_backdrop = "off"
     frame()
     assert tui.scene.size == 1.0 and tui.scene.ground == 0.0
+    tui.details = ("half", "quadrant", "sextant", "octant", "braille")
+    tui.refresh_backdrops()
     items = [it[:2] for it in tui.setting_items if it[0] == "picture_detail"]
     assert [v for _, v in items] == ["half", "quadrant", "sextant", "octant", "braille"]
 
@@ -1159,6 +1162,8 @@ def test_logo_version_and_detail_are_settings_with_a_filled_preview(tmp_path):
     tui, frame, clock = stepping_tui(None)
     tui.settings_path = tmp_path / "ui.json"
     tui.config.ui.logo_style = "theme"
+    tui.details = ("half", "quadrant", "sextant", "octant", "braille")       # a terminal that draws them
+    tui.refresh_backdrops()
     tui.open_settings()
     tui.settings_cursor = next(i for i, it in enumerate(tui.setting_items) if it[:2] == ("logo_detail", "octant"))
     tui._preview_cursor()
@@ -1168,3 +1173,37 @@ def test_logo_version_and_detail_are_settings_with_a_filled_preview(tmp_path):
     tui._preview_cursor()
     frame()
     assert tui.scene.version == "flat" and tui.scene.style == "theme"
+
+
+def test_fine_blocks_are_only_offered_where_the_terminal_draws_them(tmp_path):
+    from tidal_shuffle.artwork import drawable_details
+
+    assert drawable_details("auto", {"TERM_PROGRAM": "Apple_Terminal"}) == ("half", "quadrant", "braille")
+    assert "octant" in drawable_details("auto", {"TERM_PROGRAM": "ghostty"})
+    assert "octant" in drawable_details("auto", {"TERM": "xterm-kitty"})
+    assert "sextant" in drawable_details("auto", {"TERM_PROGRAM": "WezTerm"})
+    assert "octant" in drawable_details("all", {}) and "sextant" not in drawable_details("basic", {"TERM_PROGRAM": "ghostty"})
+    tui, frame, clock = stepping_tui(None)
+    tui.details = drawable_details("auto", {"TERM_PROGRAM": "Apple_Terminal"})
+    tui.refresh_backdrops()
+    offered = [v for k, v, *_ in tui.setting_items if k == "picture_detail"]
+    assert offered == ["half", "quadrant", "braille"]
+    assert [v for k, v, *_ in tui.setting_items if k == "logo_detail"] == ["half", "quadrant"]
+    tui.config.ui.picture_detail, tui.config.ui.logo_detail = "octant", "sextant"   # chosen in another terminal
+    assert tui.detail("picture_detail") == "quadrant" and tui.detail("logo_detail") == "quadrant"
+    frame()
+    assert tui.scene.detail == "quadrant"
+
+
+def test_lyrics_not_sung_yet_are_shown_by_default_even_after_the_old_default_was_saved(tmp_path):
+    import json
+
+    from tidal_shuffle import uistate
+    from tidal_shuffle.config import load_config
+
+    assert load_config(env={}).ui.lyrics_ahead == "show"
+    old = tmp_path / "ui.json"
+    old.write_text(json.dumps({"theme": "nord", "lyrics_ahead": "hide"}))
+    assert uistate.load(old) == {"theme": "nord"}                    # the old default is dropped
+    uistate.save(old, {"theme": "nord", "lyrics_ahead": "hide"})      # chosen now: kept
+    assert uistate.load(old) == {"theme": "nord", "lyrics_ahead": "hide"}

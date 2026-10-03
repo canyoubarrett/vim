@@ -99,7 +99,7 @@ class UiConfig:
     logo_style: str = "theme"     # theme | muted | filled | wireframe | pastel | neon | sunset | ocean | catppuccin | mono
     logo_motion: str = "float"    # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
     lyrics_lead: float = 0.55     # show the line being sung, and its words, this many seconds early
-    lyrics_ahead: str = "hide"    # lines not sung yet: hide | dim | show
+    lyrics_ahead: str = "show"    # lines not sung yet: show | dim | hide
     party: bool = False           # party mode: every logo colour and motion, cycling
     logo_backdrop: str = "off"    # behind the logo: off | cover | random | a picture in ~/.config/tidal-shuffle/backdrops
     backdrop_dim: float = 0.45    # how far the picture is dimmed towards the background (0..0.9)
@@ -107,6 +107,7 @@ class UiConfig:
     picture_detail: str = "quadrant"  # backdrops and the big cover: half | quadrant | sextant | octant | braille
     logo_version: str = "lines"   # the logo: lines (the line drawing) | flat (solid shapes, no outlines)
     logo_detail: str = "quadrant" # filled logo colours: half (1x2) | quadrant (2x2) | sextant (2x3) | octant (2x4)
+    block_glyphs: str = "auto"    # sextant and octant detail: auto (terminals known to draw them) | all | basic
     logo_size: float = 1.0        # the logo on its own, from as big as fits (1) down to 0.3
     logo_size_stage: float = 0.55 # the logo standing on a backdrop, fighter-sized
     logo_floor: float = 0.88      # where a backdrop's floor is, as a share of the panel's height
@@ -390,7 +391,7 @@ ui:
                             # catppuccin | mono  (Esc opens the settings menu)
   logo_motion: float        # float | gentle | lively | shapes | tide | topple | jelly | magnet | still
   lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
-  lyrics_ahead: hide        # lines not sung yet: hide | dim | show
+  lyrics_ahead: show        # lines not sung yet: show | dim | hide
   party: false              # party mode: the logo cycles through every colour and motion
   logo_backdrop: "off"      # behind the logo: off | cover | random | a picture's file name
                             # (`tidal-shuffle backdrops add` puts pictures in ~/.config/tidal-shuffle/backdrops)
@@ -401,6 +402,8 @@ ui:
                             # terminal that draws those blocks (Ghostty, kitty, WezTerm, iTerm2) or a font with them
   logo_version: lines       # the logo: lines (the line drawing) | flat (solid shapes, no outlines)
   logo_detail: quadrant     # filled logo colours: half | quadrant | sextant | octant (finer, like picture_detail)
+  block_glyphs: auto        # offer sextant and octant detail: auto (Ghostty, kitty; sextant in WezTerm, iTerm2)
+                            # | all (your font has them) | basic (never)
   logo_size: 1.0            # the logo on its own: 1 is as big as fits, down to 0.3
   logo_size_stage: 0.55     # on a backdrop the logo stands on the floor, this big (fighter-sized)
   logo_floor: 0.88          # how far down a backdrop's floor is (0.5 to 1 of the panel's height)
@@ -710,6 +713,7 @@ def _build(data: Mapping) -> AppConfig:
         "picture_detail": lambda v, n: _as_choice(str(v).lower(), n, ("half", "quadrant", "sextant", "octant", "braille")),
         "logo_version": lambda v, n: _as_choice(str(v).lower(), n, ("lines", "flat")),
         "logo_detail": lambda v, n: _as_choice(str(v).lower(), n, ("half", "quadrant", "sextant", "octant")),
+        "block_glyphs": lambda v, n: _as_choice(str(v).lower(), n, ("auto", "all", "basic")),
         "logo_size": lambda v, n: _as_number(v, n, float, 0.3, 1.0),
         "logo_size_stage": lambda v, n: _as_number(v, n, float, 0.25, 1.0),
         "logo_floor": lambda v, n: _as_number(v, n, float, 0.5, 1.0),
