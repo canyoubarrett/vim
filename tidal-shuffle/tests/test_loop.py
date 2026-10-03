@@ -886,3 +886,27 @@ def test_a_snapshot_of_another_song_cannot_end_this_one_early(tmp_path):
     assert rem < 1 and not loop._ending(rem, clock.mono, 0.8)
     st.started_at = clock.mono - 299.5                  # really near the end: both agree
     assert loop._ending(rem, clock.mono, 0.8)
+
+
+def test_next_holds_tidal_and_starts_the_pick_without_tidals_own_next(tmp_path):
+    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(8):
+        loop.step(); clock.sleep(1)
+    assert loop.state.plan is not None and loop.state.plan.picks
+    loop.request_skip()
+    assert world.presses == ["pause"]                 # never TIDAL's own "next"
+    assert world.played == ["t-Next One"] and world.playing
+
+
+def test_next_with_a_queued_pick_that_is_no_longer_next_starts_it_directly(tmp_path):
+    loop, world, clock, logs, _ = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.queue_supported = True
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    for _ in range(8):
+        loop.step(); clock.sleep(1)
+    assert loop.state.queued is not None
+    world.still_next = False                           # TIDAL's queue moved our pick down
+    loop.request_skip()
+    assert "next" not in world.presses
+    assert world.played == ["t-Next One"]

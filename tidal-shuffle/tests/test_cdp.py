@@ -24,6 +24,7 @@ class FakePage:
         self.store = False         # page exposes a Redux store
         self.store_plays = True    # dispatching ADD_NOW starts the track
         self.store_calls = []
+        self.loaded = None         # track ids TIDAL has loaded (None: the store does not say)
 
     def evaluate(self, js, timeout=10.0):
         self.evals.append(js)
@@ -36,6 +37,8 @@ class FakePage:
             if self.path == target:
                 return "already"
             self.path = target
+            if self.loaded is not None:
+                self.loaded.add(tid)   # opening a track's page loads it
             return "pushed"
         if "/*ts:rows_ready*/" in js:
             rows = self.rows.get(self.path, [])
@@ -64,6 +67,8 @@ class FakePage:
         if "/*ts:store_play*/" in js:
             if not self.store:
                 return "no-store"
+            if self.loaded is not None and tid not in self.loaded:
+                return "not-loaded"
             self.store_calls.append(tid)
             if self.store_plays:
                 self.playing_id, self.playing = tid, True
@@ -282,3 +287,17 @@ def test_footer_without_track_link_matches_by_title():
     out = cdp.play_track("5", verify_timeout=2, title="Them Changes")
     assert out.ok and out.detail == "matched by title"
     assert not cdp.play_track("5", verify_timeout=1, title="Other Song").ok
+
+
+def test_queue_opens_the_track_page_before_playing_an_unloaded_track():
+    """TIDAL moves on to its own next song when asked to play a track it has not
+    loaded; the track's page is opened first, and only then is it played."""
+    cdp, page, clock = make()
+    page.rows["/track/9"] = ["9"]
+    page.fail_click = True
+    page.store, page.loaded = True, set()
+    assert cdp.play_track("9", verify_timeout=2).ok        # learns that the queue works
+    page.path, page.loaded = "/home", set()
+    out = cdp.play_track("10", verify_timeout=2)
+    assert out.ok and out.method == "queue" and page.store_calls == ["9", "10"]
+    assert page.path == "/track/10"

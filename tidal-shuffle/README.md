@@ -172,13 +172,30 @@ section):
   side. Two sliders under **Backdrop look** (← → on them) set the zoom
   (`ui.backdrop_zoom`: 1 fills the panel, down to 0.3 zooms out to show more
   of the picture with a soft blurred copy around it, up to 2 zooms in) and
-  how far it is dimmed (`ui.backdrop_dim`). The picture can be: the album cover of the song playing (softened),
+  how far it is dimmed (`ui.backdrop_dim`); two more set how big the logo
+  stands on it (`ui.logo_size_stage`: smaller, fighter-sized, by default) and
+  how far down the stage's floor is (`ui.logo_floor`). The picture can be: the album cover of the song playing (softened),
   any picture of your own, or a different one of yours with each song. Add
   pictures (files, folders or zips) with
   `tidal-shuffle backdrops add ~/Downloads/stages.zip`; they are kept in
   `~/.config/tidal-shuffle/backdrops` and listed at the end of the settings
   (`tidal-shuffle backdrops list`). In the settings, ← → jump from section
   to section;
+* **Picture detail** (`ui.picture_detail`), for backdrops and the big cover,
+  in steps: Low (half blocks, 1×2 pixels a character), Medium (quarter
+  blocks, 2×2), High (sixth blocks, 2×3), Highest (eighth blocks, 2×4: as
+  fine as characters go) and Dots (braille, 2×4, grainier). Pictures are
+  drawn from the full-size original. High and Highest use newer block
+  characters: Ghostty, kitty, WezTerm and iTerm2 draw them themselves;
+  elsewhere they need a font that has them (if they show as boxes or
+  gaps, step back to Medium). For more pixels still, make the terminal's
+  font smaller (⌘−): every character is that many more pixels;
+* **Logo version** (`ui.logo_version`): the line drawing, or the flat
+  version (solid shapes in the logo's colours, no outlines), and **Logo
+  detail** (`ui.logo_detail`): how finely the filled colours are drawn, in
+  the same steps (the preview shows the logo filled while you choose);
+* **Logo size** (`ui.logo_size`): the logo on its own, from as big as fits
+  down;
 * **Party mode** (`ui.party`): the logo glides through every colour scheme,
   each shape a little behind the next so the colours ripple across it, while
   its pieces drift apart and back together and now and then topple;

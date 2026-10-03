@@ -354,9 +354,10 @@ class ShuffleLoop:
         self.log("  could not queue in TIDAL; will hand off near the end instead")
         return False
 
-    def _handoff_at_end(self, now: float) -> bool:
-        """The song is about to end: in pause mode hold TIDAL first, so it can
-        neither move on to its own next song nor be cut short, then start the pick."""
+    def _handoff_held(self, now: float) -> bool:
+        """Start the pick, in pause mode holding TIDAL first: at the end of a song
+        it can then neither move on to its own next song nor be cut short, and
+        when you press next you never hear TIDAL's own next song while the pick loads."""
         paused = self.config.player.handoff_mode == "pause" and self.player.press("pause")
         if self.handoff(now):
             return True
@@ -538,7 +539,7 @@ class ShuffleLoop:
                     now = self._clock()
                     rem = self.remaining(None, now)
                 if not st.handed_off and self._ending(rem, now, lead):
-                    self._handoff_at_end(now)
+                    self._handoff_held(now)
             elif st.current.duration is None and not st.handed_off and (now - st.started_at) > 20 * 60:
                 self.log("no timing information for 20 minutes; skipping ahead")
                 self.handoff(now)
@@ -654,13 +655,12 @@ class ShuffleLoop:
         if st.current is None:
             self.log("⏭ nothing is playing")
             return
-        if st.queued is not None and self.player.press("next"):
-            self.log(f"⏭ skipping to {st.queued.track.label()}")
+        if self._skip_to_queued():
             return
         if st.plan is not None and st.plan.picks:
             self.log("⏭ next pick")
             st.queued = None
-            self.handoff(self._clock())
+            self._handoff_held(self._clock())
             return
         if st.skip_requested:
             self.log("⏭ still choosing a song…")
@@ -678,7 +678,7 @@ class ShuffleLoop:
         st.skip_requested = False
         if st.plan.picks:
             st.queued = None
-            self.handoff(self._clock())
+            self._handoff_held(self._clock())
         else:
             self.log("  nothing to skip to")
 
@@ -735,14 +735,24 @@ class ShuffleLoop:
             self._observe(self.nowplaying.read(), self._clock())
         if st.current is None:
             return False
-        if st.queued is not None and self.player.press("next"):
-            # The pick is already next in TIDAL's queue: just move on to it.
-            self.log(f"⏭ skipping to {st.queued.track.label()}")
+        if self._skip_to_queued():
             return True
         if st.plan is None or not st.plan.picks:
             self.plan_now(allow_queue=False)
         st.queued = None
-        return self.handoff(self._clock())
+        return self._handoff_held(self._clock())
+
+    def _skip_to_queued(self) -> bool:
+        """The pick waits in TIDAL's own queue: press TIDAL's next to move on to
+        it, but only when it is still next there (otherwise TIDAL would play its
+        own next song and the pick is started directly instead)."""
+        st = self.state
+        if st.queued is None:
+            return False
+        if self.player.queue_still_next(st.queued.track) and self.player.press("next"):
+            self.log(f"⏭ skipping to {st.queued.track.label()}")
+            return True
+        return False
 
 
 def _median(values: list) -> Optional[float]:

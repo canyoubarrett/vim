@@ -74,6 +74,16 @@ SETTINGS = [
         ("catppuccin", "Catppuccin, filled", "the theme's own colours"),
         ("mono", "Black and white", ""),
     ]),
+    ("Logo version", "logo_version", [
+        ("lines", "Lines", "the line drawing; filled colours get dark edges"),
+        ("flat", "Flat", "solid shapes in the logo's colours, no outlines"),
+    ]),
+    ("Logo detail", "logo_detail", [
+        ("half", "Low", "filled colours in half blocks, 1×2 pixels a character"),
+        ("quadrant", "Medium", "quarter blocks, 2×2"),
+        ("sextant", "High", "sixth blocks, 2×3"),
+        ("octant", "Highest", "eighth blocks, 2×4: as fine as characters go"),
+    ]),
     ("Logo motion", "logo_motion", [
         ("float", "Float", "bob, drift and tilt"),
         ("gentle", "Gentle", "slower and smaller"),
@@ -85,6 +95,7 @@ SETTINGS = [
         ("magnet", "Magnet", "pushed apart now and then, snapping back"),
         ("still", "Still", "no motion"),
     ]),
+    ("Logo size", "logo_size", [("<slider>", "Size", "← → the logo on its own (no backdrop)")]),
     ("Shuffle tree", "shuffle_view", [
         ("off", "Off", ""),
         ("logo", "In place of the logo", "watch the next song being chosen (t)"),
@@ -106,6 +117,15 @@ SETTINGS = [
     ]),
     ("Backdrop look", "backdrop_zoom", [("<slider>", "Zoom", "← → zoom out to see more of the picture, or in")]),
     ("Backdrop look", "backdrop_dim", [("<slider>", "Dim", "← → how far the picture fades back behind the logo")]),
+    ("Backdrop look", "logo_size_stage", [("<slider>", "Logo", "← → how big the logo stands on a backdrop")]),
+    ("Backdrop look", "logo_floor", [("<slider>", "Floor", "← → how far down the stage's floor is")]),
+    ("Picture detail", "picture_detail", [
+        ("half", "Low", "half blocks, 1×2 pixels a character"),
+        ("quadrant", "Medium", "quarter blocks, 2×2 pixels a character"),
+        ("sextant", "High", "sixth blocks, 2×3 pixels a character"),
+        ("octant", "Highest", "eighth blocks, 2×4 pixels a character: as fine as characters go"),
+        ("braille", "Dots", "braille dots, 2×4 pixels a character (grainier)"),
+    ]),
     # pictures of your own follow these (see stages.py)
     ("Logo backdrop", "logo_backdrop", [
         ("off", "Off", ""),
@@ -116,9 +136,12 @@ SETTINGS = [
 SETTING_ITEMS = [(key, value, label, desc, section) for section, key, values in SETTINGS
                  for value, label, desc in values]
 # settings adjusted with ← →: (lowest, highest, step)
-SLIDERS = {"backdrop_zoom": (0.3, 2.0, 0.1), "backdrop_dim": (0.0, 0.9, 0.05)}
+SLIDERS = {"backdrop_zoom": (0.3, 2.0, 0.1), "backdrop_dim": (0.0, 0.9, 0.05), "logo_size": (0.3, 1.0, 0.05),
+           "logo_size_stage": (0.25, 1.0, 0.05), "logo_floor": (0.5, 1.0, 0.02)}
+BACKDROP_SLIDERS = ("backdrop_zoom", "backdrop_dim", "logo_size_stage", "logo_floor")
 # settings shown live in the preview while the cursor is on them
-PREVIEWED = ("theme", "party", "logo_style", "logo_motion", "shuffle_view", "rain", "logo_backdrop")
+PREVIEWED = ("theme", "party", "logo_style", "logo_version", "logo_detail", "logo_motion", "shuffle_view", "rain",
+             "logo_backdrop", "picture_detail")
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # the Alter Era logo's colours, for the title
@@ -596,6 +619,9 @@ class ShuffleTUI:
         motion = self.setting("logo_motion") or "float"
         sc.motion = motion if motion in MOTIONS else "float"
         sc.colors = logo_palette(sc.style, p)
+        if hasattr(sc, "set_version"):
+            sc.set_version(self.setting("logo_version") or "lines")
+        sc.detail = self.setting("logo_detail") or "quadrant"
         party = bool(self.setting("party"))
         sc.party_colors = party
         if party:
@@ -638,7 +664,8 @@ class ShuffleTUI:
             if self.backdrop is not None:
                 self.backdrop.p, self.backdrop.light = th.p, th.light
             self._applied.pop("logo", None)
-        logo = (self.setting("logo_style"), self.setting("logo_motion"), bool(self.setting("party")), th.name)
+        logo = (self.setting("logo_style"), self.setting("logo_motion"), bool(self.setting("party")), th.name,
+                self.setting("logo_version"), self.setting("logo_detail"))
         if self._applied.get("logo") != logo:
             self._apply_logo_style()
             self._applied["logo"] = logo
@@ -668,10 +695,16 @@ class ShuffleTUI:
         """Show the setting under the cursor, live, without choosing it yet."""
         key, value = self.setting_items[self.settings_cursor][:2]
         self._preview = {key: value} if key in PREVIEWED else {}
-        if key in SLIDERS and (self.chosen("logo_backdrop") or "off") == "off":
+        if (key in BACKDROP_SLIDERS or key == "picture_detail") and (self.chosen("logo_backdrop") or "off") == "off":
             # nothing to zoom or dim yet: show a picture while the slider is adjusted
             names = self.stages.names() if self.stages is not None else []
-            self._preview = {"logo_backdrop": names[0] if names else "cover"}
+            self._preview = dict(self._preview, logo_backdrop=names[0] if names else "cover")
+        if key in ("logo_detail", "logo_version"):
+            from .visualizer import FILLED_STYLES
+
+            if key == "logo_detail" and self.chosen("logo_style") not in FILLED_STYLES and not self.chosen("party"):
+                # the detail is that of filled colours: show them while choosing it
+                self._preview = dict(self._preview, logo_style="filled")
 
     def adjust_slider(self, key: str, direction: int) -> None:
         """Move a slider setting one step (it applies at once and is remembered)."""
@@ -1056,14 +1089,23 @@ class ShuffleTUI:
         dim = float(getattr(getattr(self.config, "ui", None), "backdrop_dim", 0.45))
         aspect = float(getattr(getattr(self.config, "ui", None), "cell_aspect", 0.5))
 
+        ui = getattr(self.config, "ui", None)
+
         def grid(w: int, h: int) -> list:
+            art = None
+            if name:
+                zoom = float(getattr(ui, "backdrop_zoom", 1.0) or 1.0)
+                dim_now = float(getattr(ui, "backdrop_dim", dim))
+                art = self.stages.cells(name, w, h, self._clock(), th.bg, dim_now, aspect,
+                                        key_extra=song if name == "cover" else None, zoom=zoom,
+                                        detail=self.setting("picture_detail") or "quadrant")
+            # on a stage the logo stands on the floor, fighter-sized; alone it floats, big
+            if art is not None:
+                scene.size = float(getattr(ui, "logo_size_stage", 0.55))
+                scene.ground, scene.floor = 1.0, float(getattr(ui, "logo_floor", 0.88))
+            else:
+                scene.size, scene.ground = float(getattr(ui, "logo_size", 1.0)), 0.0
             logo = scene.frame(w, h, self._clock(), playing=live)
-            if not name:
-                return logo
-            zoom = float(getattr(getattr(self.config, "ui", None), "backdrop_zoom", 1.0) or 1.0)
-            dim_now = float(getattr(getattr(self.config, "ui", None), "backdrop_dim", dim))
-            art = self.stages.cells(name, w, h, self._clock(), th.bg, dim_now, aspect,
-                                    key_extra=song if name == "cover" else None, zoom=zoom)
             if art is None:
                 return logo
             from .stages import compose
@@ -1146,7 +1188,8 @@ class ShuffleTUI:
             rows = max(1, min(h, w // 2))                 # square: a cell is about twice as tall as wide
             cols = rows * 2
             if have:
-                pic = artwork.cells(song, img, cols, rows, mode=mode, dither=_DEPTH["system"] == "256")
+                pic = artwork.cells(song, img, cols, rows, mode=self.setting("picture_detail") or mode,
+                                    dither=_DEPTH["system"] == "256")
             else:
                 pic = placeholder(cols, rows, p["mauve"], p["blue"], p["crust"])
             left, top = (w - cols) // 2, (h - rows) // 2

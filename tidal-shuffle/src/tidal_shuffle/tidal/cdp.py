@@ -509,12 +509,17 @@ class TidalCdp:
 
     def store_play(self, track_id: str) -> str:
         """Ask TIDAL's own play queue to play the track now. Returns ``'ok'``,
-        ``'no-store'``, ``'no-queue'`` or an error text."""
+        ``'no-store'``, ``'no-queue'``, ``'not-loaded'`` (TIDAL does not know the
+        track yet: open its page first) or an error text."""
         js = self._page_js("store_play", track_id, self._FIND_STORE + """
           const st = findStore();
           if (!st) return 'no-store';
           const s = st.getState() || {};
           if (!s.playQueue) return 'no-queue';
+          // TIDAL only plays tracks it has loaded: an id it does not know yet makes
+          // it move on to its own next track first. Its page loads it.
+          const items = s.content && s.content.mediaItems;
+          if (items && typeof items === 'object' && !items[ID] && !items[Number(ID)]) return 'not-loaded';
           try {
             st.dispatch({type: 'playQueue/ADD_NOW', payload: {context: {type: 'UNKNOWN'}, mediaItemIds: [Number(ID)], fromIndex: 0}});
           } catch (e) { return 'error: ' + e; }
@@ -637,10 +642,9 @@ class TidalCdp:
     def _try_store(self, track_id: str, title: Optional[str], verify_timeout: float) -> Optional[PlayOutcome]:
         if self._store_failures >= 3:
             return None
-        try:
-            res = self.store_play(track_id)
-        except CdpError as e:
-            res = f"error: {e}"
+        res = self._store_play_loaded(track_id)
+        if res == "not-loaded":
+            return None                           # not a failure of the queue: click the page's button instead
         if res != "ok":
             self.log(f"play queue: {res}")
             self._store_failures = 3 if res in ("no-store", "no-queue") else self._store_failures + 1
@@ -649,6 +653,24 @@ class TidalCdp:
         self._store_failures = 0 if out.ok else self._store_failures + 1
         self._store_works = out.ok
         return out
+
+    def _store_play_loaded(self, track_id: str, timeout: float = 4.0) -> str:
+        """``store_play``, opening the track's page first when TIDAL has not
+        loaded the track yet (otherwise it skips to its own next track)."""
+        try:
+            res = self.store_play(track_id)
+            if res != "not-loaded":
+                return res
+            self.navigate_to_track(track_id)
+            deadline = self._clock() + timeout
+            while self._clock() < deadline:
+                self._sleep(0.25)
+                res = self.store_play(track_id)
+                if res != "not-loaded":
+                    return res
+            return "not-loaded"
+        except CdpError as e:
+            return f"error: {e}"
 
     def play_track(self, track_id: str, verify_timeout: float = 8.0, prepare_timeout: float = 15.0,
                    title: Optional[str] = None) -> PlayOutcome:

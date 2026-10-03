@@ -230,6 +230,38 @@ ALTER_ERA_REGIONS = [
     ("dart", "teal", [(248.877, 307.606), (294.970, 278.225), (249.218, 430.459)]),
     ("eye", "eye", ("circle", 248.226, 274.126, 15.186)),
 ]
+# the flat version of the logo (assets/alter-era-flat.svg): solid shapes in
+# its colours, no outlines, painted back to front in the file's order
+ALTER_ERA_FLAT_REGIONS = [
+    ("dart", "cyan", [(205.447, 278.352), (296.773, 278.125), (249.218, 430.459)]),
+    ("sun", "sun", ("circle", 249.999, 144.106, 74.666)),
+    ("salmon-lt", "salmon", [(197.957, 201.572), (178.787, 185.203), (208.384, 177.297)]),
+    ("red", "red", [(229.792, 188.459), (249.075, 153.333), (270.207, 188.459)]),
+    ("salmon-rt", "salmon", [(288.216, 180.612), (320.250, 194.077), (300.478, 205.087)]),
+    ("salmon-rb", "salmon", [(325.353, 257.501), (339.955, 258.411), (331.808, 270.552)]),
+    ("peach-l", "peach", [(232.243, 202.087), (208.403, 177.908), (172.923, 264.769), (189.589, 263.640)]),
+    ("peach-r", "peach", [(265.865, 202.087), (288.267, 181.313), (330.866, 269.773), (308.732, 264.241)]),
+    ("tri", "teal", [(249.075, 179.547), (314.229, 272.295), (183.345, 273.113)]),
+    ("tri", "cyan", [(249.075, 180.808), (249.075, 237.338), (184.621, 272.383)]),
+    ("salmon-lb", "salmon", [(172.172, 264.915), (159.287, 251.386), (178.454, 250.386)]),
+    ("purple-l", "purple", [(156.578, 246.332), (174.695, 185.202), (127.984, 198.266)]),
+    ("purple-r", "purple", [(325.310, 194.076), (343.668, 253.972), (372.015, 214.041)]),
+    ("tri", "deep", [(312.845, 272.204), (249.298, 237.409), (184.621, 272.383)]),
+    ("dart", "deep", [(248.877, 307.606), (207.448, 278.950), (294.970, 278.225)]),
+    ("dart", "teal", [(249.219, 430.560), (249.176, 308.404), (251.410, 306.980), (295.877, 278.923)]),
+    ("eye", "eye", ("circle", 248.227, 274.126, 15.186)),
+]
+LOGO_VERSIONS = ("lines", "flat")
+
+
+def region_outline(geom) -> list:
+    """A region's edge as a closed line (for drawing the flat logo in outline styles)."""
+    if isinstance(geom, tuple) and geom[0] == "circle":
+        _, cx, cy, r = geom
+        return [(cx + r * math.cos(a / 72 * 2 * math.pi), cy + r * math.sin(a / 72 * 2 * math.pi)) for a in range(73)]
+    return list(geom) + [geom[0]]
+
+
 STYLES = ("theme", "muted", "filled", "wireframe", "mono", "pastel", "neon", "sunset", "ocean", "catppuccin")
 FILLED_STYLES = ("filled", "pastel", "sunset", "ocean", "catppuccin")
 OUTLINE_STYLES = ("wireframe", "neon")
@@ -349,10 +381,12 @@ class LogoScene:
             arc = self.polylines[0]
             cx, cy = _circle_center(arc[0], arc[len(arc) // 2], arc[-1])
             self.regions[0] = ("sun", "sun", ("circle", cx, cy, 74.666))
-        if self.polylines:
-            pts = [p for line in self.polylines for p in line]
-            self._vb = (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
-            self._shape_centre = self._centres()
+        self._bundled = bundled
+        self._lines = (self.polylines, self.path_meta, self.regions)
+        self.version = "lines"       # the bundled logo: "lines" (the line drawing) or "flat" (solid shapes)
+        self.region_edges = True     # filled styles draw dark edges around the shapes
+        self.detail = "quadrant"     # how finely filled shapes are drawn: half, quadrant, sextant, octant
+        self._measure()
         # a dot is (2 * cell_aspect) as wide as it is tall; compensate so the logo keeps its shape
         self.dot_ratio = max(0.4, min(2.5, 2 * cell_aspect))
         big, small = load_art(None if (path.suffix.lower() == ".svg") else path) if not self.polylines else ([], [])
@@ -368,6 +402,11 @@ class LogoScene:
         self._amp, self._speed, self._pieces, self._tilt, self._tide = m["amp"], m["speed"], m["pieces"], m["tilt"], m["tide"]
         self._sway = m["sway"]
         self._party = m["party"]
+        # size and placement: ``size`` scales the logo down from as-big-as-fits;
+        # ``ground`` 1 stands it on a floor ``floor`` of the way down the panel
+        # (on a stage backdrop), 0 floats it in the middle; all eased
+        self.size, self.ground, self.floor = 1.0, 0.0, 0.88
+        self._size, self._ground, self._floor = 1.0, 0.0, 0.88
         self.party_colors = False   # party mode: the colours cycle through every scheme
         self._phys: dict = {}    # shape -> [x, y, turn, vx, vy, vturn]: its spring, in SVG units and radians
         self._scale_seen = 0.3   # dots per SVG unit at the last frame (to turn the logo's motion into units)
@@ -375,6 +414,27 @@ class LogoScene:
         self._float_t = 0.0      # float time: runs at full speed while playing, slowly while paused
         self._motion_t = 0.0     # float time scaled by the motion's speed
         self.shown_at: Optional[float] = None
+
+    def _measure(self) -> None:
+        if self.polylines:
+            pts = [p for line in self.polylines for p in line]
+            self._vb = (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+            self._shape_centre = self._centres()
+
+    def set_version(self, version: str) -> None:
+        """Switch the bundled logo between its line drawing and its flat version."""
+        version = version if version in LOGO_VERSIONS else "lines"
+        if version == self.version or not self._bundled:
+            return
+        if version == "flat":
+            self.regions = list(ALTER_ERA_FLAT_REGIONS)
+            self.polylines = [region_outline(g) for _, _, g in self.regions]
+            self.path_meta = [(shape, colour) for shape, colour, _ in self.regions]
+        else:
+            self.polylines, self.path_meta, self.regions = self._lines
+        self.region_edges = version != "flat"
+        self.version = version
+        self._measure()
 
     def _centres(self) -> dict:
         """The middle of each shape, in SVG units (what it turns around on its own)."""
@@ -458,14 +518,19 @@ class LogoScene:
         # 5.2 dots of drift each side, 4.1 dots of bob (more when the shapes spread), and the shadow's row
         spare = 1.0 + 0.12 * max(self._pieces, self._tide, self._party) + (
             0.12 if MOTIONS[self.motion]["physics"] or self._sway > 0.01 or self._party > 0.01 else 0.0)
-        avail_w = max(4, ((width - 1) * 2 - 14) / spare)
-        avail_h = max(4, ((height - 1) * 4 - 11) / spare)
+        size = max(0.1, min(1.0, self._size))
+        avail_w = max(4, ((width - 1) * 2 - 14) / spare * size)
+        avail_h = max(4, ((height - 1) * 4 - 11) / spare * size)
         scale = min(avail_w * self.dot_ratio / bw, avail_h / bh)   # dots (vertical) per unit
         mx, my = (x0 + x1) / 2, (y0 + y1) / 2
         dx, dy, tilt = self.pose()
+        motion = 0.5 + 0.5 * size                 # a smaller logo floats less far
+        dx, dy = dx * motion, dy * motion
         c, s = math.cos(tilt), math.sin(tilt)
         cx = width * 2 / 2 + dx
-        cy = (height - 1) * 4 / 2 + dy
+        centre = (height - 1) * 4 / 2
+        standing = self._floor * (height - 1) * 4 - bh * scale / 2 - 4.5 * motion   # feet on the floor
+        cy = centre + (max(centre, standing) - centre) * self._ground + dy
         f = self.pieces_now()
         ratio = self.dot_ratio
         poses = {}
@@ -544,14 +609,17 @@ class LogoScene:
 
     def _filled_grid(self, width: int, height: int, fade: float) -> tuple[dict, tuple]:
         """The logo's regions filled in its own colours with dark edges, drawn
-        at 2x2 pixels per cell (quarter blocks). Returns {(row, col): cell}."""
-        from .artwork import QUADRANTS, _pil
+        at the scene's detail (half, quarter, sixth or eighth blocks: up to 2x4
+        pixels a cell). Returns {(row, col): cell}."""
+        from .artwork import BLOCK_TABLES, DETAIL_PIXELS, QUADRANTS, _pil, split_cell
 
         Image = _pil()
         if Image is None or not self.regions:
             return {}, (0, 0, 0)
         from PIL import ImageDraw
 
+        detail = self.detail if self.detail in ("half", "quadrant", "sextant", "octant") else "quadrant"
+        dx, dy = DETAIL_PIXELS[detail]
         scale, place = self._layout(width, height)
         ss = 2                                         # supersampling, for clean edges
         W, H = width * 2 * ss, height * 4 * ss          # dot space x ss
@@ -567,7 +635,7 @@ class LogoScene:
                 phase = 0.35 * (names.index(shape) if shape in names else 0)
                 fill = lerp(bg, party_color(colour, self._motion_t, phase, self.theme_palette), fade)
             else:
-                fill = lerp(bg, self.colors[colour], fade)
+                fill = lerp(bg, self.colors.get(colour, ink), fade)
             if isinstance(geom, tuple) and geom[0] == "circle":
                 _, gx, gy, r = geom
                 pts = [to_dots(gx + r * math.cos(a / 36 * 2 * math.pi), gy + r * math.sin(a / 36 * 2 * math.pi))
@@ -575,23 +643,38 @@ class LogoScene:
             else:
                 pts = [to_dots(x, y) for x, y in geom]
             pts = [(x * ss, y * ss) for x, y in pts]
-            draw.polygon(pts, fill=fill, outline=lerp(bg, ink, fade), width=edge)
-        img = img.resize((width * 2, height * 2), Image.BOX)   # dots are 2x4 per cell; quarters are 2x2
+            draw.polygon(pts, fill=fill, outline=lerp(bg, ink, fade) if self.region_edges else None,
+                         width=edge if self.region_edges else 0)
+        img = img.resize((width * dx, height * dy), Image.BOX)
         px = img.load()
+
+        def near_bg(c) -> bool:
+            return (c[0] - bg[0]) ** 2 + (c[1] - bg[1]) ** 2 + (c[2] - bg[2]) ** 2 < 40
+
+        table = BLOCK_TABLES.get(detail)
+        full = (1 << (dx * dy)) - 1
         out: dict = {}
         min_c, max_c, max_r = 10 ** 9, -1, -1
         for y in range(height):
             for x in range(width):
-                quad = (px[2 * x, 2 * y], px[2 * x + 1, 2 * y], px[2 * x, 2 * y + 1], px[2 * x + 1, 2 * y + 1])
-                if quad[0] == quad[1] == quad[2] == quad[3]:
-                    if quad[0] == bg:
+                pts = [px[dx * x + i, dy * y + j] for j in range(dy) for i in range(dx)]
+                if all(p == pts[0] for p in pts):
+                    if pts[0] == bg:
                         continue
-                    out[(y, x)] = (" ", None, False, quad[0])   # a solid cell: no gaps between rows
-                else:
+                    out[(y, x)] = (" ", None, False, pts[0])   # a solid cell: no gaps between rows
+                elif detail == "half":
+                    top, bottom = pts
+                    if near_bg(bottom):
+                        out[(y, x)] = ("▀", top, False, None)
+                    elif near_bg(top):
+                        out[(y, x)] = ("▄", bottom, False, None)
+                    else:
+                        out[(y, x)] = ("▀", top, False, bottom)
+                elif detail == "quadrant":
                     best = None
                     for mask in (8, 4, 2, 1, 12, 10, 9):
-                        a = [quad[i] for i in range(4) if mask & (8 >> i)]
-                        b = [quad[i] for i in range(4) if not mask & (8 >> i)]
+                        a = [pts[i] for i in range(4) if mask & (8 >> i)]
+                        b = [pts[i] for i in range(4) if not mask & (8 >> i)]
                         ca = tuple(sum(v[k] for v in a) // len(a) for k in range(3))
                         cb = tuple(sum(v[k] for v in b) // len(b) for k in range(3))
                         err = sum((v[0] - ca[0]) ** 2 + (v[1] - ca[1]) ** 2 + (v[2] - ca[2]) ** 2 for v in a)
@@ -605,6 +688,21 @@ class LogoScene:
                         out[(y, x)] = (QUADRANTS[15 ^ mask], cb, False, None)
                     else:
                         out[(y, x)] = (QUADRANTS[mask], ca, False, cb)
+                else:
+                    got = split_cell(pts, table)
+                    if got is None:
+                        c = tuple(sum(v[k] for v in pts) // len(pts) for k in range(3))
+                        if near_bg(c):
+                            continue
+                        out[(y, x)] = (" ", None, False, c)
+                    else:
+                        ch, ca, cb, mask = got
+                        if near_bg(cb):
+                            out[(y, x)] = (ch, ca, False, None)
+                        elif near_bg(ca):
+                            out[(y, x)] = (table[full ^ mask], cb, False, None)
+                        else:
+                            out[(y, x)] = (ch, ca, False, cb)
                 min_c, max_c, max_r = min(min_c, x), max(max_c, x), max(max_r, y)
         return out, (min_c, max_c, max_r)
 
@@ -617,10 +715,13 @@ class LogoScene:
         if pick is None:
             return {}, 0.0, (0, 0, 0)
         art, scale = pick
+        scale *= max(0.1, min(1.0, self._size))
         dots = self._dots[id(art)]
         dx, dy, tilt = self.pose()
         cx = width * 2 / 2 + dx
-        cy = (height - 1) * 4 / 2 + dy          # leave the bottom row for the shadow
+        centre = (height - 1) * 4 / 2
+        standing = self._floor * (height - 1) * 4 - len(art) * 4 * scale / 2 - 4.5
+        cy = centre + (max(centre, standing) - centre) * self._ground + dy   # leave the bottom row for the shadow
         c, s = math.cos(tilt), math.sin(tilt)
         cells: dict[tuple[int, int], int] = {}
         self._cell_colors = {}
@@ -729,6 +830,12 @@ class LogoScene:
                                                                             m["tilt"], m["tide"])
             self._sway = m["sway"]
             self._party = m["party"]
+        if self._last_t == now and dt == 0.0 and self.shown_at == now:
+            self._size, self._ground, self._floor = self.size, self.ground, self.floor
+        k = min(1.0, dt / 0.6) if dt > 0 else 0.0
+        self._size += (self.size - self._size) * k
+        self._ground += (self.ground - self._ground) * k
+        self._floor += (self.floor - self._floor) * k
         step = dt if playing else dt * 0.35        # paused: it keeps drifting, slowly
         self._float_t += step
         self._advance(step)

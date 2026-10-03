@@ -129,6 +129,13 @@ def test_store_play_dispatches_add_now():
                                   "payload": {"context": {"type": "UNKNOWN"}, "mediaItemIds": [123], "fromIndex": 0}}]
 
 
+def test_store_play_waits_for_tidal_to_load_the_track():
+    known = STORE.replace("player: {}", "player: {}, content: {mediaItems: {'55': {}}}")
+    out = run("", [("store_play", "123"), ("store_play", "55")], setup=known)
+    assert out["results"] == ["not-loaded", "ok"]
+    assert [a["payload"]["mediaItemIds"] for a in out["dispatched"]] == [[55]]
+
+
 def test_store_play_without_react_store():
     out = run("", [("store_play", "123")])
     assert out["results"] == ["no-store"]

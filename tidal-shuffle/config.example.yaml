@@ -120,6 +120,14 @@ ui:
                             # (`tidal-shuffle backdrops add` puts pictures in ~/.config/tidal-shuffle/backdrops)
   backdrop_dim: 0.45        # how far the picture is dimmed, so the logo stands out (0 to 0.9)
   backdrop_zoom: 1.0        # 1 fills the panel; 0.3 to 1 zooms out to show more, up to 2 zooms in
+  picture_detail: quadrant  # backdrops and the big cover, pixels a character: half (1x2) | quadrant (2x2)
+                            # | sextant (2x3) | octant (2x4) | braille (2x4 dots); sextant and octant need a
+                            # terminal that draws those blocks (Ghostty, kitty, WezTerm, iTerm2) or a font with them
+  logo_version: lines       # the logo: lines (the line drawing) | flat (solid shapes, no outlines)
+  logo_detail: quadrant     # filled logo colours: half | quadrant | sextant | octant (finer, like picture_detail)
+  logo_size: 1.0            # the logo on its own: 1 is as big as fits, down to 0.3
+  logo_size_stage: 0.55     # on a backdrop the logo stands on the floor, this big (fighter-sized)
+  logo_floor: 0.88          # how far down a backdrop's floor is (0.5 to 1 of the panel's height)
   shuffle_view: "off"       # watch the next song being chosen: off | logo | side  (t toggles)
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up

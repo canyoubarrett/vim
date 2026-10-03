@@ -1044,3 +1044,127 @@ def test_zoomed_out_picture_has_a_blurred_surround(tmp_path):
     assert lines(out[10]) >= lines(fill[10])
     # zoomed out: the top and bottom rows are the soft surround, darker and smoother than the picture
     assert max(max(t) for t, b in out[0]) < 200 and out[0] != fill[0]
+
+
+def test_on_a_backdrop_the_logo_is_smaller_and_stands_on_the_floor(tmp_path):
+    def extent(scene, w=60, h=24, frames=40):
+        rows = set()
+        for i in range(frames):
+            g = scene.frame(w, h, i / 12)
+            rows |= {y for y, r in enumerate(g) if any("⠀" < c[0] <= "⣿" for c in r)}
+        return min(rows), max(rows)
+
+    alone = LogoScene()
+    top, bottom = extent(alone)
+    stage = LogoScene()
+    stage.size, stage.ground, stage.floor = 0.55, 1.0, 0.88
+    s_top, s_bottom = extent(stage)
+    assert (s_bottom - s_top) < 0.7 * (bottom - top)          # smaller
+    assert s_bottom >= 18 and s_top > top + 4                  # its feet near the floor, not mid-air
+    stage.floor = 0.7                                          # a higher floor: it stands higher
+    for i in range(40, 80):
+        stage.frame(60, 24, i / 12)
+    assert extent(stage, frames=10)[1] < s_bottom
+
+
+def test_logo_size_sliders_and_picture_detail_setting(tmp_path):
+    from PIL import Image
+
+    from tidal_shuffle.stages import StageArt
+
+    Image.new("RGB", (344, 144), (220, 60, 60)).save(tmp_path / "7 - stage.png")
+    tui, frame, clock = stepping_tui(None)
+    tui.stages = StageArt(tmp_path)
+    tui.settings_path = tmp_path / "ui.json"
+    tui.config.ui.logo_backdrop = "7 - stage.png"
+    frame(3)
+    assert tui.scene.size == tui.config.ui.logo_size_stage == 0.55 and tui.scene.ground == 1.0
+    tui.adjust_slider("logo_size_stage", 1)
+    frame()
+    assert tui.scene.size == 0.6
+    tui.config.ui.logo_backdrop = "off"
+    frame()
+    assert tui.scene.size == 1.0 and tui.scene.ground == 0.0
+    items = [it[:2] for it in tui.setting_items if it[0] == "picture_detail"]
+    assert [v for _, v in items] == ["half", "quadrant", "sextant", "octant", "braille"]
+
+
+def test_picture_detail_levels():
+    from PIL import Image
+
+    from tidal_shuffle.artwork import cell_average, detail_cells
+
+    img = Image.new("RGB", (8, 8), (0, 0, 0))
+    for y in range(8):
+        img.putpixel((0, y), (255, 255, 255))                  # a thin white line on the left
+    half = detail_cells(img, 4, 2, "half")
+    quad = detail_cells(img, 4, 2, "quadrant")
+    brl = detail_cells(img, 4, 2, "braille")
+    assert all(len(r) == 4 for g in (half, quad, brl) for r in g)
+    assert brl[0][0][0] != " " and "⠀" < brl[0][0][0] <= "⣿"   # the line drawn in dots
+    assert quad[0][0][0] in "▌▐▘▝▖▗▛▜▙▟"                       # in quarter blocks
+    assert cell_average(("▀", (200, 0, 0), False, (0, 0, 200))) == (100, 0, 100)
+
+
+def test_sextant_and_octant_blocks_draw_finer_than_quarters():
+    from PIL import Image
+
+    from tidal_shuffle.artwork import OCTANTS, SEXTANTS, cell_average, detail_cells
+
+    assert len(set(SEXTANTS.values())) == 64 and len(set(OCTANTS.values())) == 256
+    assert SEXTANTS[1] == "\U0001FB00" and SEXTANTS[62] == "\U0001FB3B"      # sextant-1 .. sextant-23456
+    assert OCTANTS[4] == "\U0001CD00" and OCTANTS[254] == "\U0001CDE5"       # octant-3 .. octant-2345678
+    assert OCTANTS[0b11110000] == "▄" and OCTANTS[0b01010101] == "▌"
+    img = Image.new("RGB", (4, 4), (0, 0, 0))
+    img.putpixel((0, 0), (255, 255, 255))                    # one white pixel, top left
+    octs = detail_cells(img, 2, 1, "octant")
+    assert octs[0][0] == (OCTANTS[1], (255, 255, 255), False, (0, 0, 0))   # just that eighth
+    img = Image.new("RGB", (2, 3), (0, 0, 0))
+    for y in range(2):
+        img.putpixel((1, y), (255, 0, 0))                     # the top two rows on the right
+    sx = detail_cells(img, 1, 1, "sextant")[0][0]
+    assert sx[0] == SEXTANTS[0b1010] and sx[1] == (255, 0, 0)
+    assert cell_average(sx) == (85, 0, 0)                     # a third of the cell is red
+    flat = detail_cells(Image.new("RGB", (4, 6), (9, 9, 9)), 2, 2, "sextant")
+    assert all(c == (" ", None, False, (9, 9, 9)) for r in flat for c in r)
+
+
+def test_flat_logo_version_and_logo_detail():
+    from tidal_shuffle.artwork import OCTANTS, QUADRANTS
+    from tidal_shuffle.visualizer import ALTER_ERA_FLAT_REGIONS, LogoScene
+
+    scene = LogoScene(style="filled", motion="still")
+    lines_edges = scene.region_edges
+    scene.set_version("flat")
+    assert scene.regions == ALTER_ERA_FLAT_REGIONS and not scene.region_edges and lines_edges
+    assert len(scene.polylines) == len(ALTER_ERA_FLAT_REGIONS)        # outlines for the line styles
+    chars = {}
+    for detail in ("half", "quadrant", "octant"):
+        scene.detail = detail
+        scene.shown_at = None
+        scene.frame(70, 26, 0.0)
+        grid = scene.frame(70, 26, 5.0)
+        chars[detail] = {c[0] for row in grid for c in row if c[0] != " "}
+    assert chars["half"] <= {"▀", "▄", "▁", "▂"}
+    assert chars["quadrant"] & set(QUADRANTS.values()) - {"▀", "▄", "▌", "▐", "█"}
+    assert chars["octant"] & set(OCTANTS.values()) - set(QUADRANTS.values())
+    scene.set_version("lines")
+    assert scene.region_edges and scene.regions[0][0] == "sun"
+    wire = LogoScene(style="wireframe", motion="still")
+    wire.set_version("flat")
+    assert any(c[0] != " " for row in wire.frame(70, 26, 0.0) for c in row)
+
+
+def test_logo_version_and_detail_are_settings_with_a_filled_preview(tmp_path):
+    tui, frame, clock = stepping_tui(None)
+    tui.settings_path = tmp_path / "ui.json"
+    tui.config.ui.logo_style = "theme"
+    tui.open_settings()
+    tui.settings_cursor = next(i for i, it in enumerate(tui.setting_items) if it[:2] == ("logo_detail", "octant"))
+    tui._preview_cursor()
+    frame()
+    assert tui.scene.detail == "octant" and tui.scene.style == "filled"     # shown filled, to see the detail
+    tui.settings_cursor = next(i for i, it in enumerate(tui.setting_items) if it[:2] == ("logo_version", "flat"))
+    tui._preview_cursor()
+    frame()
+    assert tui.scene.version == "flat" and tui.scene.style == "theme"
