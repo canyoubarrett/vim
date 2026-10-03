@@ -10,7 +10,7 @@ from tidal_shuffle.lyrics import LyricLine, Lyrics, parse_lrc
 from tidal_shuffle.models import Candidate, NowPlaying, Pick, TidalTrack, TIDAL_BUNDLE_ID
 from tidal_shuffle.theme import FLAVORS, hex_rgb, theme
 from tidal_shuffle.tui import ScreenRenderable, ShuffleTUI, fmt_time, lyric_rows, lyrics_grid
-from tidal_shuffle.visualizer import LogoScene, art_to_dots, load_art
+from tidal_shuffle.visualizer import LogoScene, art_to_dots, lerp, load_art
 
 LRC = "[00:10.00]one\n[00:20.00]two\n[00:30.00]three\n[00:40.00]four\n[00:50.00]five"
 MOCHA = theme("mocha")
@@ -191,17 +191,22 @@ def test_unsynced_lyrics_use_two_columns_when_they_fit():
     both = [t for t in text if "verse 0" in t and "verse 2" in t] or [t for t in text if "verse 1" in t and "verse 3" in t]
     assert both                                                       # side by side
     lit = [c for row in grid for c in row if len(c) > 3 and c[3] == MOCHA.current_bg]
-    assert lit                                                        # the estimated line is highlighted
-    # too long for two columns: falls back to the scrolling single column
+    assert not lit                                                    # guessed timing is never highlighted
+    # too long for two columns: falls back to scrolling with the song, still not highlighted
     many = Lyrics(lines=[LyricLine(None, f"l{i}") for i in range(200)], synced=False).estimate_timing(240.0)
     grid = lyrics_grid(many, 120.0, 240.0, 80, 20, MOCHA)
-    assert any(len(c) > 3 and c[3] == MOCHA.current_bg for row in grid for c in row)
+    text = ["".join(c[0] for c in row).strip() for row in grid]
+    assert "l100" in text or "l99" in text or "l101" in text
+    assert not any(len(c) > 3 and c[3] == MOCHA.current_bg for row in grid for c in row)
 
 
 def test_panel_title_says_timing_is_estimated():
     plain = Lyrics(lines=[LyricLine(None, "hello there")], synced=False, source="LRCLIB")
     out, _ = render(make_tui(plain), 120, 40)
-    assert "Lyrics · LRCLIB · timing estimated" in out
+    assert "Lyrics · LRCLIB · no timing" in out and "scrolling" not in out      # fits: shown whole
+    long = Lyrics(lines=[LyricLine(None, f"line number {i}") for i in range(120)], synced=False, source="LRCLIB")
+    out, _ = render(make_tui(long), 120, 40)
+    assert "no timing · scrolling by estimate" in out
 
 
 def find_row(out, needle):
@@ -613,3 +618,155 @@ def test_big_cover_view_fades_in_over_the_logo():
     tui.handle_input("art")
     frame(20)
     assert "Cover" not in frame() and "Alter Era" in frame()
+
+
+
+def test_lines_not_sung_yet_are_hidden_dimmed_or_shown():
+    lyr = Lyrics(lines=parse_lrc(LRC), synced=True)
+    text = lambda g: ["".join(c[0] for c in row).strip() for row in g]
+    hide = text(lyrics_grid(lyr, 31.0, 200, 30, 7, MOCHA, ahead="hide"))
+    assert "two" in hide and "three" in hide and "four" not in hide and "five" not in hide
+    show = text(lyrics_grid(lyr, 31.0, 200, 30, 7, MOCHA, ahead="show"))
+    assert "four" in show and "five" in show
+    dim = lyrics_grid(lyr, 31.0, 200, 30, 7, MOCHA, ahead="dim")
+    four = next(r for r in dim if "four" in "".join(c[0] for c in r))
+    assert all(c[1] == lerp(MOCHA.past, MOCHA.bg, 0.45) for c in four if c[0].strip())
+    # before the singing starts: nothing but the count-in
+    intro = text(lyrics_grid(lyr, 3.0, 200, 30, 7, MOCHA, ahead="hide"))
+    assert not any(w in " ".join(intro) for w in ("one", "two", "three")) and any("●" in t or "○" in t for t in intro)
+
+
+def test_lead_moves_the_sweep_earlier():
+    from tidal_shuffle.tui import sung_chars
+
+    lyr = Lyrics(lines=parse_lrc("[00:10.00]one two three four\n[00:20.00]next"), synced=True)
+    assert sung_chars(lyr, 0, 10.5, lead=0.55) > sung_chars(lyr, 0, 10.5, lead=0.25)
+    assert lyr.index_at(9.5, 0.55) == 0 and lyr.index_at(9.5, 0.25) == -1
+
+
+# -- settings menu, logo styles and motions -----------------------------------------------
+
+def test_escape_opens_the_settings_and_choices_apply_and_persist(tmp_path):
+    from tidal_shuffle import uistate
+    from tidal_shuffle.tui import SETTING_ITEMS
+
+    tui, frame, clock = stepping_tui(None)
+    tui.settings_path = tmp_path / "ui.json"
+    frame()
+    assert tui.handle_input("escape") and tui.settings_open
+    out = frame(10)
+    assert "Settings" in out and "LOGO COLOURS" in out and "Logo colours, filled" in out
+    filled = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("logo_style", "filled"))
+    while tui.settings_cursor < filled:
+        tui.handle_input("down")
+    tui.handle_input("enter")
+    assert tui.config.ui.logo_style == "filled" and tui.scene.style == "filled"
+    assert uistate.load(tui.settings_path)["logo_style"] == "filled"
+    # clicking a choice applies it too
+    out = frame()
+    y, x = find_row(out, "Shapes")
+    tui.handle_input(f"click:{x + 1}:{y + 1}")
+    assert tui.config.ui.logo_motion == "shapes" and tui.scene.motion == "shapes"
+    assert tui.handle_input("escape") and not tui.settings_open
+    # p and Esc: one menu at a time
+    tui.handle_input("presets")
+    assert tui.menu_open and not tui.settings_open
+    tui.handle_input("escape")
+    assert not tui.menu_open and not tui.settings_open
+
+
+def test_rain_setting_reaches_the_backdrop():
+    from tidal_shuffle.tui import SETTING_ITEMS
+
+    tui = make_tui(None)
+    off = next(i for i, it in enumerate(SETTING_ITEMS) if it[:2] == ("rain", 0.0))
+    tui.apply_setting(off)
+    assert tui.backdrop.visibility == 0.0
+    tui.backdrop = None
+    tui.apply_setting(off + 2)
+    assert tui.backdrop is not None and tui.backdrop.visibility == 0.6
+
+
+def test_logo_style_colours():
+    tui = make_tui(None)
+    for style in ("muted", "mono", "theme"):
+        tui.config.ui.logo_style = style
+        tui._apply_logo_style()
+        assert tui.scene.style == style
+    tui.config.ui.logo_style = "mono"
+    tui._apply_logo_style()
+    assert len(set(tui.scene.logo)) == 1                           # grey: no tint
+    tui.config.ui.logo_style = "muted"
+    tui._apply_logo_style()
+    lo = tui.scene.logo
+    assert max(lo) - min(lo) < max(MOCHA.logo) - min(MOCHA.logo)  # less saturated than the theme's
+
+
+def test_title_uses_the_logos_colours():
+    from tidal_shuffle.tui import TITLE_COLORS
+
+    tui = make_tui(None)
+    text = tui.flowing_title(" Tidal Shuffle ")
+    cols = {tuple(sp.style.color.triplet) for sp in text.spans}
+    assert len(cols) > 5
+    t = tui._clock
+    tui._clock = lambda: t() + 3.0
+    later = {tuple(sp.style.color.triplet) for sp in tui.flowing_title(" Tidal Shuffle ").spans}
+    assert later != cols                                          # it drifts
+
+
+def test_filled_and_wireframe_logos_use_the_logos_colours():
+    from tidal_shuffle.visualizer import LOGO_COLORS
+
+    filled = LogoScene(style="filled", bg=MOCHA.bg)
+    for i in range(30):                                            # past the 1.6 s fade-in
+        g = filled.frame(50, 24, 1 + i * 0.1)
+    colours = {c[1] for r in g for c in r if len(c) > 1 and c[1]} | {c[3] for r in g for c in r if len(c) > 3 and c[3]}
+    assert LOGO_COLORS["sun"] in colours and LOGO_COLORS["purple"] in colours
+    assert any(c[0] in "▘▝▖▗▀▄▌▐▚▞▛▜▙▟" for r in g for c in r)
+    wire = LogoScene(style="wireframe", bg=MOCHA.bg)
+    for i in range(30):
+        g = wire.frame(50, 24, 1 + i * 0.1)
+    near = lambda a, b: sum(abs(x - y) for x, y in zip(a, b)) < 90
+    line_cols = {c[1] for r in g for c in r if "⠀" < c[0] <= "⣿"}
+    assert any(near(c, LOGO_COLORS["sun"]) for c in line_cols) and any(near(c, LOGO_COLORS["cyan"]) for c in line_cols)
+
+
+def test_shapes_float_on_their_own_and_motions_change_smoothly():
+    scene = LogoScene(motion="shapes")
+    scene.frame(60, 26, 1.0)
+    scene._motion_t = 5.0
+    _, place = scene._layout(60, 26)
+    sun, eye = place("sun"), place("eye")
+    still = LogoScene(motion="float")
+    still.frame(60, 26, 1.0)
+    still._motion_t = 5.0
+    _, place2 = still._layout(60, 26)
+    # the same point moves differently in each shape when they float on their own
+    d_sun = [a - b for a, b in zip(sun(248, 274), place2("sun")(248, 274))]
+    d_eye = [a - b for a, b in zip(eye(248, 274), place2("eye")(248, 274))]
+    assert d_sun != d_eye
+    # switching motion eases in: no jump between frames
+    scene = LogoScene(motion="float")
+    prev = None
+    scene.frame(60, 26, 0.0)
+    scene.motion = "shapes"
+    for i in range(1, 40):
+        scene.frame(60, 26, i * 0.083)
+        if prev is not None:
+            assert abs(scene._pieces - prev) < 0.1
+        prev = scene._pieces
+    assert prev > 0.8
+
+
+def test_glass_is_tinted_by_the_sky_not_by_panels_underneath():
+    from rich.segment import Segment
+
+    from tidal_shuffle.fx import Canvas
+    from tidal_shuffle.tui import style as mkstyle
+
+    cells = [[[" ", None, False, (20, 20, 30)] for _ in range(4)]]
+    canvas = Canvas(cells, MOCHA.bg, MOCHA.text, glass=0.5)
+    canvas.blit([[Segment("    ", mkstyle(None, False, (200, 100, 250)))]], 0, 0, 4, 1)    # a bright bar
+    canvas.blit([[Segment("    ", mkstyle(None, False, MOCHA.bg))]], 0, 0, 4, 1)          # a panel over it
+    assert cells[0][0][3] == canvas.sky[0][0] or sum(cells[0][0][3]) < 200

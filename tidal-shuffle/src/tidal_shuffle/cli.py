@@ -338,16 +338,22 @@ def _make_screen(cfg: AppConfig, rt, loop):
             elif name == "lrclib":
                 sources.append(LrclibLyrics())
         lyrics = LyricsService(sources, cache_path=paths.CONFIG_DIR / "cache" / "lyrics.json", log=Verbose.log)
+    from . import uistate
+
+    settings_path = paths.CONFIG_DIR / "ui.json"
+    uistate.apply(cfg.ui, uistate.load(settings_path))      # what was chosen in the settings menu last time
     scene = None
     if cfg.ui.visualizer:
         art = Path(cfg.ui.logo_file).expanduser() if cfg.ui.logo_file else None
-        scene = LogoScene(art_path=art, cell_aspect=cfg.ui.cell_aspect)
+        scene = LogoScene(art_path=art, cell_aspect=cfg.ui.cell_aspect, style=cfg.ui.logo_style,
+                          motion=cfg.ui.logo_motion)
     artwork = None
     if cfg.ui.artwork and rt.catalog is not None:
         from .artwork import ArtworkService
 
         artwork = ArtworkService(rt.catalog, paths.CONFIG_DIR / "cache" / "art", log=Verbose.log)
-    return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene, artwork=artwork, history=rt.history, post=loop.post)
+    return ShuffleTUI(loop, cfg, lyrics=lyrics, scene=scene, artwork=artwork, history=rt.history, post=loop.post,
+                      settings_path=settings_path)
 
 
 def _start_controls(cfg: AppConfig, loop, screen=None) -> list:

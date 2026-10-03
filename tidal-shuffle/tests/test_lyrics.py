@@ -151,3 +151,36 @@ def test_lrclib_retries_with_a_plainer_title_for_synced_lyrics():
     lyr = lrclib(handler).fetch("Song (2019 Remaster)", "Band feat. Guest", "Album", 200.0, None)
     assert lyr.synced and lyr.lines[0].text == "synced at last"
     assert asked[-1] == ("Song", "Band")
+
+
+def test_timings_from_two_sources_are_combined_when_they_agree():
+    from tidal_shuffle.lyrics import Lyrics, merge_lyrics, parse_lrc
+
+    a = Lyrics(lines=parse_lrc("[00:10.00]one two\n[00:20.00]three four\n[00:30.00]five six\n[00:40.00]seven"),
+               synced=True, source="TIDAL")
+    b = Lyrics(lines=parse_lrc("[00:10.40]One two\n[00:20.60]three four\n[00:30.20]five six\n[00:41.00]seven"),
+               synced=True, source="LRCLIB")
+    m = merge_lyrics([a, b])
+    assert m.source == "TIDAL + LRCLIB" and [l.time for l in m.lines] == [10.2, 20.3, 30.1, 40.5]
+    # another recording (a steady offset): one timing is kept, not averaged
+    c = Lyrics(lines=parse_lrc("[00:15.00]one two\n[00:25.00]three four\n[00:35.00]five six\n[00:45.00]seven"),
+               synced=True, source="LRCLIB")
+    assert merge_lyrics([a, c]) is a
+    # synced beats plain, whichever came first; plain only when nothing is synced
+    plain = Lyrics(lines=[], synced=False, source="TIDAL")
+    plain.lines = parse_lrc("[00:01.00]x")
+    plain.synced = False
+    assert merge_lyrics([plain, b]) is b
+    assert merge_lyrics([plain]) is plain
+    inst = Lyrics(lines=[], instrumental=True, source="LRCLIB")
+    assert merge_lyrics([inst]) is inst and merge_lyrics([]) is None
+
+
+def test_word_timing_is_taken_from_the_source_that_has_it():
+    from tidal_shuffle.lyrics import Lyrics, merge_lyrics, parse_lrc
+
+    a = Lyrics(lines=parse_lrc("[00:10.00]one two\n[00:20.00]three four\n[00:30.00]five six"), synced=True, source="TIDAL")
+    b = Lyrics(lines=parse_lrc("[00:10.20]<00:10.20>one <00:10.90>two\n[00:20.20]three four\n[00:30.20]five six"),
+               synced=True, source="LRCLIB")
+    m = merge_lyrics([a, b])
+    assert m.lines[0].words and m.lines[0].words[0] == (10.1, 0)

@@ -107,6 +107,10 @@ ui:
   art_blocks: quadrant      # quadrant: 2x2 pixels per cell | half: 1x2, if your font lacks ▚ ▞ ▙ ▟
   backdrop: true            # rain falling behind the panels
   rain: 0.3                 # how visible the rain is: 0 (not at all) to 1 (plain to see)
+  logo_style: theme         # theme | muted | filled | wireframe | mono  (Esc opens the settings menu)
+  logo_motion: float        # float | gentle | lively | shapes (each shape on its own) | still
+  lyrics_lead: 0.55         # seconds early the sung words light up (more if they lag the singing)
+  lyrics_ahead: hide        # lines not sung yet: hide | dim | show
   glass: 0.22               # how much of the rain shows through the panels (0 = none)
   track_poll: 0.5           # seconds between checks for a new song while the screen is up
   mouse: true               # clickable keys and presets (hold Option, or Fn in Terminal, to select text)

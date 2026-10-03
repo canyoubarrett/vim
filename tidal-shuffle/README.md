@@ -84,6 +84,8 @@ simply follows your choice.
   `~/.config/tidal-shuffle/cache/art`; `ui.artwork: false` turns it off),
   the song playing with a ▶ PLAYING / ⏸ PAUSED badge, a progress bar, the
   next pick, and the flow with its target energy as a meter;
+* the title in the logo's colours (sun yellow, peach, coral, purple, cyan,
+  teal), the gradient drifting slowly along it;
 * behind everything, rain: two depths of drops, the far ones dim and slow,
   the near ones brighter and faster, slanting a little in the wind, drawn in
   braille dots so they fall smoothly. It is a drizzle for calm songs and
@@ -100,18 +102,22 @@ simply follows your choice.
   panel allows, so it stays crisp; if it looks too wide or narrow in your
   font, adjust `ui.cell_aspect` (a cell's width / height, 0.5 by default);
 * on the right, the **lyrics**, scrolling with the song, the line being
-  sung in bright bold text (TIDAL's own synced lyrics first, then
-  [LRCLIB](https://lrclib.net), free and keyless, which is searched again
-  with a plainer title and the main artist when only plain lyrics turned
-  up). As each word is sung it turns inverted (dark text on the accent
-  colour), so the inversion sweeps along the line in time with the song,
-  following the word timing when the lyrics have it (enhanced LRC) and the
-  singing pace otherwise. Lyrics without timing get estimated timing: the lines are spread over
-  the song after a short intro, longer lines getting more time and verse
-  breaks counting as pauses, and the title says "timing estimated"; they are
-  shown whole, in two columns split at a verse break when needed, with the
-  estimated line highlighted, or scrolled along when even two columns are
-  too few. Lyrics are cached in
+  sung in bright bold text. Every source is asked (TIDAL's own lyrics, then
+  [LRCLIB](https://lrclib.net), free and keyless, searched again with a
+  plainer title and the main artist when only plain lyrics turned up), and
+  when two of them have synced lyrics that agree (same recording, no steady
+  offset), their timings are averaged line by line: two independent
+  timings are closer to the singing than either; word timing (enhanced LRC)
+  is taken from whichever has it, and when they disagree, TIDAL's is kept.
+  As each word is sung it turns inverted (dark text on the accent colour),
+  so the inversion sweeps along the line in time with the song. Lines not
+  sung yet are hidden by default, so nothing shows during an intro but a
+  count-in (the settings can dim or show them). Lyrics without any timing
+  are never highlighted (a guess would be wrong as often as right): they are
+  shown whole, in two columns split at a verse break when needed, and the
+  title says "no timing"; when even two columns are too few they scroll
+  along with the song and the title says "scrolling by estimate". Lyrics
+  are cached in
   `~/.config/tidal-shuffle/cache/lyrics.json`. A song without lyrics gives
   the logo the whole width, and so does `l`; a narrow window gives the
   lyrics the whole width;
@@ -146,6 +152,23 @@ colours, check Terminal's profile, and that `NO_COLOR` is not set in your
 shell (`run` also says so in its log). iTerm2, Ghostty, WezTerm and kitty
 announce true colour and show the exact colours.
 
+**Settings menu.** Press Esc (or click `esc settings`) for the settings,
+chosen with ↑ ↓ and Enter or a click, applied at once and remembered
+between runs (in `~/.config/tidal-shuffle/ui.json`; they override the
+config file's `ui:` section):
+
+* **Logo colours**: the theme's lilac, a muted grey one, the logo's own
+  colours filled in (drawn with quarter blocks, with dark edges), the logo's
+  lines in its own colours, or black and white (`ui.logo_style`);
+* **Logo motion**: float, gentle, lively, still, or shapes, where every
+  shape of the logo floats on its own (`ui.logo_motion`); switching eases
+  from one motion into the other;
+* **Rain**: off, faint, soft or clear (`ui.rain`);
+* **Lyrics not sung yet**: hidden (each line appears when it is sung; the
+  default), dimmed, or shown to read ahead (`ui.lyrics_ahead`);
+* **Lyrics timing**: how early the sung words light up, if they lag or run
+  ahead of the singing (`ui.lyrics_lead`, 0.55 s by default).
+
 **Presets menu.** Press `p` (or click the `p presets` chip) to open the
 preset menu over the logo and lyrics. Presets are grouped (energy & sound,
 how picks are chosen, sources, Spotify tuning, then your own), each with its
@@ -173,6 +196,7 @@ tune the rest.
 | `p` | open / close the presets menu (↑ ↓ or wheel, Enter or click to apply, Esc to close) |
 | `l` | logo alone / logo and lyrics |
 | `a` | the album cover, big, in place of the logo (and back) |
+| `esc` | the settings menu (logo colours and motion, rain, lyrics) |
 | `q` | stop Tidal Shuffle |
 | `?` | list the keys |
 

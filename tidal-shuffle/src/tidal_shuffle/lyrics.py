@@ -283,26 +283,83 @@ class LyricsService:
         return "pending"
 
     def _fetch(self, key, title, artist, album, duration, tidal_id) -> None:
-        found: Optional[Lyrics] = None
+        results: list[Lyrics] = []
         failed = False
-        for src in self.sources:
+        for src in self.sources:          # ask every source: their timings are combined
             try:
                 lyr = src.fetch(title, artist, album, duration, tidal_id)
             except Exception as e:
                 self.log(f"lyrics from {src.name} failed: {e}")
                 failed = True
                 continue
-            if lyr is None:
-                continue
-            if lyr.instrumental:
-                found = found or lyr
-                continue
-            if lyr.synced:
-                found = lyr
-                break
-            found = found if (found is not None and not found.instrumental) else lyr  # keep looking for synced
+            if lyr is not None:
+                results.append(lyr)
+        found = merge_lyrics(results)
         if found is not None or not failed:   # a failed lookup is retried next time
             self.cache.set(key, found.to_json() if found is not None else {})
             self.cache.flush()
         with self._lock:
             self._results[key] = found
+
+
+def _norm_line(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", (text or "").lower()).strip()
+
+
+def blend_timing(a: Lyrics, b: Lyrics) -> Lyrics:
+    """Combine two synced versions of the same lyrics.
+
+    The lines are matched by their words. When the two agree (most matched
+    lines within a second of each other, with no steady offset between them,
+    so they time the same recording), each matched line gets the average of
+    the two times: two independent timings, averaged, are closer to the
+    singing than either. Word timing (enhanced LRC) is taken from whichever
+    has it. When they disagree, ``a`` is kept as it is."""
+    import difflib
+    import statistics
+
+    na = [_norm_line(l.text) for l in a.lines]
+    nb = [_norm_line(l.text) for l in b.lines]
+    pairs = []
+    for block in difflib.SequenceMatcher(None, na, nb, autojunk=False).get_matching_blocks():
+        for k in range(block.size):
+            i, j = block.a + k, block.b + k
+            if na[i] and a.lines[i].time is not None and b.lines[j].time is not None:
+                pairs.append((i, j))
+    texts = [i for i in range(len(na)) if na[i]]
+    if len(pairs) < max(3, len(texts) // 2):
+        return a                                   # not the same lyrics
+    deltas = [b.lines[j].time - a.lines[i].time for i, j in pairs]
+    offset = statistics.median(deltas)
+    spread = statistics.median(abs(d - offset) for d in deltas)
+    if abs(offset) > 1.5 or spread > 0.6:
+        return a                                   # another recording or edit: keep one timing
+    lines = [LyricLine(l.time, l.text, l.words) for l in a.lines]
+    for i, j in pairs:
+        la, lb = a.lines[i], b.lines[j]
+        if abs((lb.time - la.time) - offset) > 1.0:
+            continue                               # an outlier: trust the first source
+        t = (la.time + lb.time) / 2
+        words = la.words
+        if not words and lb.words and _norm_line(la.text) == _norm_line(lb.text) and la.text.strip() == lb.text.strip():
+            words = [(w + (t - lb.time), at) for w, at in lb.words]
+        elif words:
+            words = [(w + (t - la.time), at) for w, at in words]
+        lines[i] = LyricLine(round(t, 3), la.text, words)
+    lines.sort(key=lambda l: l.time or 0.0)
+    return Lyrics(lines=lines, synced=True, source=f"{a.source} + {b.source}")
+
+
+def merge_lyrics(results: list) -> Optional[Lyrics]:
+    """The best lyrics from what every source found: synced ones (timings
+    combined across sources that agree), else plain ones, else "instrumental"."""
+    synced = [r for r in results if r.synced and r.lines]
+    if synced:
+        best = synced[0]
+        for other in synced[1:]:
+            best = blend_timing(best, other)
+        return best
+    plain = [r for r in results if r.lines and not r.instrumental]
+    if plain:
+        return max(plain, key=lambda r: len(r.lines))
+    return next((r for r in results if r.instrumental), None)

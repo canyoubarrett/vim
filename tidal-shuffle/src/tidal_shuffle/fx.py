@@ -95,15 +95,19 @@ class Backdrop:
             self._density = target                # first frame: no easing from nothing
         else:
             self._density += (target - self._density) * min(1.0, dt / 3.0)
-        top, bottom = (p["crust"], p["base"]) if not self.light else (p["base"], p["mantle"])
+        # a sky close to the panels' own colour, so the rain blends in with them
+        top, bottom = (lerp(p["crust"], p["base"], 0.6), p["base"]) if not self.light else (p["base"], p["mantle"])
         rows = []
         for y in range(h):
             bg = lerp(top, bottom, y / max(1, h - 1))
             rows.append([[" ", None, False, bg] for _ in range(w)])
         # faint by default: each drop only a little lighter than the sky right behind it
         v = self.visibility
-        far = (p["overlay0"], 0.35 * v)
-        near = (lerp(p["overlay2"], p["sky"], 0.25), 0.55 * v)
+        def grey(c):                              # the colour without its tint
+            g = (c[0] + c[1] + c[2]) // 3
+            return (g, g, g)
+        far = (grey(p["overlay0"]), 0.35 * v)
+        near = (grey(p["overlay2"]), 0.55 * v)
         layers = (
             # count, speed (dots/s), length (dots), colour, slant (dots across per dot down)
             (w * h / 7.0, 30.0, 3, far, 0.10),
@@ -148,6 +152,7 @@ class Canvas:
         self.base_bg = base_bg
         self.text = text
         self.glass = glass
+        self.sky = [[c[3] for c in row] for row in cells]   # the backdrop alone: what glass is tinted by
         self._style_cache: dict = {}
         self._widths: dict = {}
 
@@ -205,7 +210,7 @@ class Canvas:
                     under = row[cx]
                     sky = under[3]
                     if bg is None or bg == base:
-                        cbg = lerp(base, sky, glass)        # glass: tinted by the sky behind
+                        cbg = lerp(base, self.sky[yy][cx], glass)   # glass: tinted by the sky, not by panels below
                     else:
                         cbg = bg
                     cfg = fg or self.text

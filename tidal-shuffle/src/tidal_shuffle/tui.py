@@ -47,7 +47,44 @@ KEYS_LINE = "space play/pause · n next pick · f flow · p presets · l lyrics 
 # toolbar chips: (key, label, action); actions "cmd:<loop command>" or "ui:<screen action>"
 CHIPS = [("space", "play/pause", "cmd:playpause"), ("n", "next", "cmd:next"), ("f", "flow", "cmd:flow"),
          ("p", "presets", "ui:presets"), ("l", "lyrics", "ui:view"), ("a", "cover", "ui:art"),
-         ("q", "quit", "cmd:quit")]
+         ("esc", "settings", "ui:settings"), ("q", "quit", "cmd:quit")]
+
+# The settings menu (Esc): (section, ui setting, [(value, label, description)])
+SETTINGS = [
+    ("Logo colours", "logo_style", [
+        ("theme", "Theme", "the theme's lilac, breathing"),
+        ("muted", "Muted", "softer and greyer"),
+        ("filled", "Logo colours, filled", "the logo's own colours, filled in"),
+        ("wireframe", "Logo colours, outlines", "the logo's lines in its own colours"),
+        ("mono", "Black and white", ""),
+    ]),
+    ("Logo motion", "logo_motion", [
+        ("float", "Float", "bob, drift and tilt"),
+        ("gentle", "Gentle", "slower and smaller"),
+        ("lively", "Lively", "bigger and quicker"),
+        ("shapes", "Shapes", "every shape floats on its own"),
+        ("still", "Still", "no motion"),
+    ]),
+    ("Rain", "rain", [
+        (0.0, "Off", ""), (0.3, "Faint", "barely there"), (0.6, "Soft", ""), (1.0, "Clear", ""),
+    ]),
+    ("Lyrics not sung yet", "lyrics_ahead", [
+        ("hide", "Hidden", "each line appears when it is sung"),
+        ("dim", "Dimmed", "faint until sung"),
+        ("show", "Shown", "read ahead"),
+    ]),
+    ("Lyrics timing", "lyrics_lead", [
+        (0.3, "Later", "if the highlight runs ahead of the singing"),
+        (0.55, "Normal", ""),
+        (0.8, "Earlier", "if the highlight lags the singing"),
+        (1.1, "Earliest", ""),
+    ]),
+]
+SETTING_ITEMS = [(key, value, label, desc, section) for section, key, values in SETTINGS
+                 for value, label, desc in values]
+
+# the Alter Era logo's colours, for the title
+TITLE_COLORS = [(253, 192, 0), (250, 167, 110), (243, 124, 104), (136, 128, 222), (0, 255, 230), (10, 180, 155)]
 HEADER_H = 7
 
 # the preset menu's sections, in order; presets of your own come last
@@ -244,7 +281,7 @@ def paint_current(row: list, start: int, cells: list, th: Theme) -> None:
 
 
 def lyric_rows(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int,
-               height: int) -> list[tuple[str, str, int]]:
+               height: int, lead: float = 0.25) -> list[tuple[str, str, int]]:
     """The rows to show, centred on the line being sung: (text, kind, offset),
     kind being "current", "past:N", "next:N" (N = lines away), "plain",
     "countin" or "blank", offset where the row starts in its lyric line."""
@@ -260,7 +297,7 @@ def lyric_rows(lyrics: Lyrics, position: Optional[float], duration: Optional[flo
         return []
     pos = position or 0.0
     if lyrics.synced:
-        current = lyrics.index_at(pos)
+        current = lyrics.index_at(pos, lead)
         first = starts[current] if current >= 0 else 0
         last = (starts[current + 1] if current + 1 < len(starts) else len(rows)) if current >= 0 else 1
         # centre the whole (possibly wrapped) line, but never push its start off the top
@@ -325,7 +362,8 @@ def _fade_grid(grid: list, alpha: float, th: Theme) -> list:
 
 def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, height: int, th: Theme) -> Optional[list]:
     """All the lyrics at once, in two columns (or one, if that fits), split at a
-    verse break; the current line on a bar. None when they do not fit."""
+    verse break. Nothing is highlighted: without real timing a highlight would
+    be wrong as often as right. None when they do not fit."""
     col_w = (width - 4) // 2
 
     def wrapped(wrap_at: int) -> list[tuple[str, int, int]]:
@@ -342,8 +380,6 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
     rows = wrapped(width - 8)                 # one column, if everything fits
     if not rows:
         return None
-    current = lyrics.index_at(position or 0.0) if lyrics.synced else -1
-    sung = sung_chars(lyrics, current, position or 0.0) if current >= 0 else 0.0
     grid = [[(" ", None)] * width for _ in range(height)]
 
     def paint(column: list, x0: int, w: int, top: int) -> None:
@@ -353,13 +389,8 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
                 return
             start = x0 + max(0, (w - len(text)) // 2)
             row = grid[y]
-            if i == current and current >= 0:
-                paint_current(row, start, sweep_cells(text, off, lyrics.lines[i].text.strip(), sung, th), th)
-            else:
-                kind = "plain" if current < 0 else (f"past:{current - i}" if i < current else f"next:{i - current}")
-                color = _line_color(kind, th)
-                for k, ch in enumerate(text):
-                    row[start + k] = (ch, color)
+            for k, ch in enumerate(text):
+                row[start + k] = (ch, th.text)
 
     if len(rows) <= height:
         paint(rows, 0, width, max(0, (height - len(rows)) // 2))
@@ -388,22 +419,32 @@ def two_column_grid(lyrics: Lyrics, position: Optional[float], width: int, heigh
     return grid
 
 
+def lyrics_fit(lyrics: Lyrics, width: int, height: int, th: Theme) -> bool:
+    """Do lyrics without real timing fit the panel whole (no scrolling needed)?"""
+    return two_column_grid(lyrics, 0.0, width, height, th) is not None
+
+
 def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[float], width: int, height: int,
-                th: Theme, alpha: float = 1.0) -> list:
+                th: Theme, alpha: float = 1.0, lead: float = 0.25, ahead: str = "show") -> list:
     """Lyric rows centred in the panel; the words of the line being sung turn
-    inverted as they are sung. Lyrics without real timing are shown whole,
-    in two columns, when they fit. ``alpha`` fades the whole thing."""
+    inverted as they are sung. ``ahead``: what to do with lines not sung yet
+    (show, dim or hide). Lyrics without real timing are never highlighted:
+    shown whole, in two columns, when they fit, else scrolled along with the
+    song. ``alpha`` fades the whole thing."""
     if lyrics.estimated or not lyrics.synced:
         whole = two_column_grid(lyrics, position, width, height, th)
         if whole is not None:
             return _fade_grid(whole, alpha, th)
+        lyrics = Lyrics(lines=lyrics.lines, synced=False, source=lyrics.source)   # scroll, no highlight
     grid = [[(" ", None)] * width for _ in range(height)]
-    rows = lyric_rows(lyrics, position, duration, width, height)
-    current = lyrics.index_at(position or 0.0) if lyrics.synced else -1
-    sung = sung_chars(lyrics, current, position or 0.0) if current >= 0 else 0.0
+    rows = lyric_rows(lyrics, position, duration, width, height, lead)
+    current = lyrics.index_at(position or 0.0, lead) if lyrics.synced else -1
+    sung = sung_chars(lyrics, current, position or 0.0, lead) if current >= 0 else 0.0
     for r, (text, kind, off) in enumerate(rows):
         if r >= height or (not text and kind != "current"):
             continue
+        if kind.startswith("next:") and ahead == "hide":
+            continue                                   # not sung yet
         text = text[:max(1, width - 2)]
         start = max(0, (width - len(text)) // 2)
         row = list(grid[r])
@@ -412,6 +453,10 @@ def lyrics_grid(lyrics: Lyrics, position: Optional[float], duration: Optional[fl
             paint_current(row, start, sweep_cells(text, off, line_text, sung, th), th)
         else:
             color = _line_color(kind, th)
+            if kind.startswith("next:") and ahead == "dim":
+                color = lerp(th.past, th.bg, 0.45)
+            elif kind == "plain":
+                color = th.text
             for i, ch in enumerate(text):
                 row[start + i] = (ch, color)
         grid[r] = row
@@ -425,7 +470,7 @@ class ShuffleTUI:
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
                  theme: Optional[Theme] = None, artwork=None, history=None,
                  post: Optional[Callable[[str], None]] = None,
-                 presets: Optional[Callable[[], dict]] = None):
+                 presets: Optional[Callable[[], dict]] = None, settings_path=None):
         self.loop = loop
         self.config = config
         self.lyrics = lyrics
@@ -434,6 +479,12 @@ class ShuffleTUI:
             scene.logo, scene.glow, scene.shadow, scene.bg = self.th.logo, self.th.logo_glow, self.th.shadow, self.th.bg
         self.scene = scene
         ui = getattr(config, "ui", None)
+        self.settings_path = settings_path
+        self.settings_open = False
+        self.settings_cursor = 0
+        self._settings = [0.0, 0.0]
+        self._settings_hits: list = []
+        self._apply_logo_style()
         self.backdrop = (Backdrop(self.th.p, light=self.th.name == "latte", visibility=float(getattr(ui, "rain", 0.3)))
                          if getattr(ui, "backdrop", True) else None)
         self.glass = float(getattr(ui, "glass", 0.22))
@@ -478,6 +529,60 @@ class ShuffleTUI:
         self.view = "logo" if self.view == "auto" else "auto"
         self.log("showing the logo" if self.view == "logo" else "showing the lyrics")
 
+    def _apply_logo_style(self) -> None:
+        """Give the logo the colours and motion chosen in the settings."""
+        sc = self.scene
+        if sc is None:
+            return
+        ui = getattr(self.config, "ui", None)
+        th, p = self.th, self.th.p
+        style = getattr(ui, "logo_style", "theme")
+        sc.style = style if style in ("theme", "muted", "filled", "wireframe", "mono") else "theme"
+        sc.motion = getattr(ui, "logo_motion", "float")
+        if style == "muted":
+            sc.logo, sc.glow = lerp(th.logo, p["overlay1"], 0.55), lerp(th.logo_glow, p["overlay2"], 0.5)
+        elif style == "mono":
+            dark_bg = sum(th.bg) < 384
+            sc.logo, sc.glow = ((222, 222, 222), (255, 255, 255)) if dark_bg else ((40, 40, 40), (0, 0, 0))
+        else:
+            sc.logo, sc.glow = th.logo, th.logo_glow
+
+    def setting(self, key: str):
+        return getattr(getattr(self.config, "ui", None), key, None)
+
+    def is_current(self, key: str, value) -> bool:
+        cur = self.setting(key)
+        if isinstance(value, float) and isinstance(cur, (int, float)):
+            return abs(cur - value) < 1e-6
+        return cur == value
+
+    def open_settings(self) -> None:
+        self.menu_open = False
+        cur = next((i for i, it in enumerate(SETTING_ITEMS) if self.is_current(it[0], it[1])), 0)
+        self.settings_cursor = cur
+        self.settings_open = True
+
+    def apply_setting(self, index: int) -> None:
+        """Apply one choice of the settings menu, at once, and remember it."""
+        from . import uistate
+
+        if not 0 <= index < len(SETTING_ITEMS):
+            return
+        key, value, label, _, section = SETTING_ITEMS[index]
+        ui = getattr(self.config, "ui", None)
+        if ui is None:
+            return
+        setattr(ui, key, value)
+        if key in ("logo_style", "logo_motion"):
+            self._apply_logo_style()
+        elif key == "rain":
+            if self.backdrop is None and value > 0:
+                self.backdrop = Backdrop(self.th.p, light=self.th.name == "latte", visibility=value)
+            elif self.backdrop is not None:
+                self.backdrop.visibility = value
+        uistate.save(self.settings_path, {k: getattr(ui, k) for k in uistate.KEYS if hasattr(ui, k)})
+        self.log(f"{section}: {label}")
+
     def toggle_cover(self) -> None:
         self.cover_view = not self.cover_view
         self.log("showing the album cover" if self.cover_view else "showing the logo")
@@ -502,11 +607,20 @@ class ShuffleTUI:
         if kind == "cmd":
             self.post(arg)
         elif kind == "ui" and arg == "presets":
+            self.settings_open = False
             self.menu_open = False if self.menu_open else (self.open_menu() or True)
         elif kind == "ui" and arg == "view":
             self.toggle_view()
         elif kind == "ui" and arg == "art":
             self.toggle_cover()
+        elif kind == "ui" and arg == "settings":
+            if self.settings_open:
+                self.settings_open = False
+            else:
+                self.open_settings()
+        elif kind == "set":
+            self.settings_cursor = int(arg)
+            self.apply_setting(int(arg))
         elif kind == "preset":
             self.choose(arg)
         elif kind == "menu" and arg == "close":
@@ -533,6 +647,24 @@ class ShuffleTUI:
             return True
         if cmd == "art":
             self.toggle_cover()
+            return True
+        if cmd == "escape" and not self.menu_open:
+            self.act("ui:settings")                   # Esc opens and closes the settings
+            return True
+        if self.settings_open:
+            n = len(SETTING_ITEMS)
+            if cmd in ("up", "wheel-up"):
+                self.settings_cursor = max(0, self.settings_cursor - 1)
+            elif cmd in ("down", "wheel-down"):
+                self.settings_cursor = min(n - 1, self.settings_cursor + 1)
+            elif cmd == "enter":
+                self.apply_setting(self.settings_cursor)
+            elif cmd == "quit":
+                self.settings_open = False
+            elif cmd in ("left", "right"):
+                pass
+            else:
+                return False
             return True
         if self.menu_open:
             names = self._preset_names()
@@ -591,6 +723,18 @@ class ShuffleTUI:
             t = i / n * (len(colors) - 1)
             k = min(len(colors) - 2, int(t))
             out.append(ch, style(lerp(colors[k], colors[k + 1], t - k), bold))
+        return out
+
+    def flowing_title(self, text: str) -> Text:
+        """The title in the logo's colours, the gradient drifting slowly along it."""
+        out = Text()
+        cols = TITLE_COLORS + TITLE_COLORS[:1]              # a loop, so the drift never jumps
+        shift = (self._clock() / 14.0) % 1.0
+        n = len(cols) - 1
+        for i, ch in enumerate(text):
+            u = ((i / max(1, len(text))) * 0.6 + shift) % 1.0 * n
+            k = int(u)
+            out.append(ch, style(lerp(cols[k], cols[k + 1], u - k), True))
         return out
 
     def meter(self, value: float, cells: int = 10) -> Text:
@@ -716,7 +860,7 @@ class ShuffleTUI:
         grid.add_column(width=art_w, no_wrap=True)
         grid.add_column(ratio=1)
         grid.add_row(art, lines)
-        title = self.gradient_text(" Tidal Shuffle ", [p["mauve"], p["pink"], p["peach"]])
+        title = self.flowing_title(" Tidal Shuffle ")
         subtitle = f"{self.config.preset or 'no preset'} · {self.config.shuffle.strategy} · {st.picks_played} picks"
         return self._panel(grid, title, subtitle=subtitle)
 
@@ -760,11 +904,19 @@ class ShuffleTUI:
         title = "Cover" + (f" · {album}" if album else "") + ("" if have else (" · loading…" if img == "pending" else " · none"))
         return self._panel(GridView(grid), title, subtitle="a for the logo", padding=(0, 0))
 
-    def lyrics_panel(self, lyr: Lyrics, pos: Optional[float], duration: Optional[float], alpha: float) -> Panel:
-        title = f"Lyrics · {lyr.source}" + (" · timing estimated" if lyr.estimated else ("" if lyr.synced else " (not synced)"))
+    def lyrics_panel(self, lyr: Lyrics, pos: Optional[float], duration: Optional[float], alpha: float,
+                     width: int = 0, height: int = 0) -> Panel:
         th = self.th
-        return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th, alpha=alpha)), title,
-                           padding=(0, 0))
+        title = f"Lyrics · {lyr.source}"
+        if lyr.estimated or not lyr.synced:
+            title += " · no timing"
+            if width and height and not lyrics_fit(lyr, width - 2, height - 2, th):
+                title += " · scrolling by estimate"
+        ui = getattr(self.config, "ui", None)
+        lead = float(getattr(ui, "lyrics_lead", 0.55))
+        ahead = getattr(ui, "lyrics_ahead", "hide")
+        return self._panel(GridView(lambda w, h: lyrics_grid(lyr, pos, duration, w, h, th, alpha=alpha, lead=lead,
+                                                             ahead=ahead)), title, padding=(0, 0))
 
     # -- what the lyrics panel should show, and the transitions ------------------
     def wanted_lyrics(self) -> tuple[Optional[Lyrics], str]:
@@ -831,12 +983,14 @@ class ShuffleTUI:
             self._content = [1.0 if showing_want and self._layout_goal else 0.0, 0.0]
             self._menu = [menu_goal, 0.0]
             self._cover = [1.0 if self.cover_view else 0.0, 0.0]
+            self._settings = [1.0 if self.settings_open else 0.0, 0.0]
         else:
             dt = min(dt, 0.25)
             self._layout = list(spring(*self._layout, self._layout_goal, dt, 5.5))
             self._content = list(spring(*self._content, content_goal, dt, 24.0 if content_goal < 0.5 else 9.0))
             self._menu = list(spring(*self._menu, menu_goal, dt, 14.0))
             self._cover = list(spring(*self._cover, 1.0 if self.cover_view else 0.0, dt, 10.0))
+            self._settings = list(spring(*self._settings, 1.0 if self.settings_open else 0.0, dt, 14.0))
         if want is None and self._content[0] < 0.01 and self._layout[0] < 0.01:
             self._shown = None
 
@@ -931,6 +1085,50 @@ class ShuffleTUI:
         self._menu_hits = hits
         return self._panel(text, "Presets", subtitle="p or esc to close")
 
+    def settings_panel(self, height: int, top_row: int) -> Panel:
+        """The settings menu, in sections; records where each choice is drawn."""
+        th, p = self.th, self.th.p
+        rows: list = []
+        last = None
+        for i, (key, value, label, desc, section) in enumerate(SETTING_ITEMS):
+            if section != last:
+                if rows:
+                    rows.append(("gap", None))
+                rows.append(("label", section))
+                last = section
+            rows.append(("item", i))
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append("↑↓ / wheel move · enter / click choose · esc close   ", style(th.faint))
+        text.append("● ", style(p["green"], True))
+        text.append("in use\n\n", style(th.faint))
+        room = max(1, height - 4)
+        self.settings_cursor = max(0, min(self.settings_cursor, len(SETTING_ITEMS) - 1))
+        at = rows.index(("item", self.settings_cursor))
+        first = min(max(0, at - room // 2), max(0, len(rows) - room))
+        if first and rows[first - 1][0] == "label":
+            first -= 1
+        hits = []
+        name_w = max(len(it[2]) for it in SETTING_ITEMS) + 2
+        for r, (kind, val) in enumerate(rows[first:first + room]):
+            if kind == "gap":
+                text.append("\n")
+                continue
+            if kind == "label":
+                text.append(f"  {val.upper()}\n", style(p["overlay1"], True))
+                continue
+            key, value, label, desc, _ = SETTING_ITEMS[val]
+            mark = "● " if self.is_current(key, value) else "  "
+            if val == self.settings_cursor:
+                text.append(f" ▸{mark}{label.ljust(name_w)}{desc} \n", style(th.current_fg, True, th.current_bg))
+            else:
+                text.append("  ")
+                text.append(mark, style(p["green"], True))
+                text.append(label.ljust(name_w), style(th.text, True))
+                text.append(desc + " \n", style(th.subtle))
+            hits.append((top_row + 1 + 2 + r, 0, 10_000, f"set:{val}"))
+        self._settings_hits = hits
+        return self._panel(text, "Settings", subtitle="esc to close")
+
     def body_regions(self, x: int, y: int, width: int, height: int, gap: int) -> list:
         """(renderable, x, y, w, h, opacity) for the body: the logo, the lyrics
         (fading, over the logo while it glides), Up next, and the preset menu."""
@@ -954,8 +1152,12 @@ class ShuffleTUI:
         if self._shown is not None and L > 0.01:
             pos, duration = self._shown_pos
             alpha = max(0.0, min(1.0, self._content[0]))
-            out.append((self.lyrics_panel(self._shown, pos, duration, alpha), lyr_x, y, lyr_w, height,
+            out.append((self.lyrics_panel(self._shown, pos, duration, alpha, lyr_w, height), lyr_x, y, lyr_w, height,
                         smoothstep(L / 0.55)))           # the empty glass box comes with the glide
+        sm = max(0.0, min(1.0, self._settings[0]))
+        if self.settings_open or sm > 0.01:
+            out.append((self.settings_panel(height, y), x, y, width, height,
+                        sm if not self.settings_open else max(sm, 0.02)))
         m = max(0.0, min(1.0, self._menu[0]))
         if self.menu_open or m > 0.01:
             out.append((self.presets_panel(height, y), x, y, width, height, m if not self.menu_open else max(m, 0.02)))
@@ -1000,6 +1202,8 @@ class ShuffleTUI:
                 label = f"flow: {self.config.shuffle.flow}"
             if action == "ui:presets" and self.menu_open:
                 label = "close presets"
+            if action == "ui:settings" and self.settings_open:
+                label = "close settings"
             chip = f" {key} "
             seg = f" {label}   "
             if x + len(chip) + len(seg) > width:
@@ -1024,7 +1228,7 @@ class ShuffleTUI:
 
     def regions(self, width: int, height: int) -> list:
         """Where every panel goes: (renderable, x, y, w, h, opacity), back to front."""
-        self._menu_hits, self._toolbar_hits = [], []
+        self._menu_hits, self._toolbar_hits, self._settings_hits = [], [], []
         mx = 2 if width >= 100 else (1 if width >= 60 else 0)
         my = 1 if height >= 30 else 0
         gap = 1 if height >= 30 else 0
@@ -1042,7 +1246,8 @@ class ShuffleTUI:
             out.extend(self.body_regions(mx, body_y, inner, body_h, gap_x))
             out.append((self.footer(foot), mx, foot_y, inner, foot, 1.0))
         out.append((self.toolbar(height - 1, width), 0, height - 1, width, 1, 1.0))
-        self._hits = (self._menu_hits if self.menu_open else []) + self._toolbar_hits
+        self._hits = ((self._menu_hits if self.menu_open else []) + (self._settings_hits if self.settings_open else [])
+                      + self._toolbar_hits)
         return out
 
     def compose(self, console: Console, options: ConsoleOptions, width: int, height: int):
