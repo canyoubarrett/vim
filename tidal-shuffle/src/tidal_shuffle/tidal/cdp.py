@@ -326,7 +326,7 @@ class TidalCdp:
         return str(self.evaluate("location.pathname") or "")
 
     # -- navigation & playback ------------------------------------------------
-    def _page_js(self, marker: str, track_id: Optional[str], body: str) -> str:
+    def _page_js(self, marker: str, track_id: Optional[str], body: str, title: Optional[str] = None) -> str:
         """Wrap ``body`` with the helpers every page script shares.
 
         ``marker`` names the snippet (tests dispatch on it). TIDAL may redirect
@@ -335,10 +335,12 @@ class TidalCdp:
         "on the track's page" too.
         """
         tid = json.dumps(str(int(track_id))) if track_id else "null"
+        ttl = json.dumps(title or "")
         return f"""
         (() => {{ /*ts:{marker}*/
           const S = {self._js_sel()};
           const ID = {tid};
+          const TITLE = {ttl};
           const want = ID ? '/track/' + ID : null;
           const pathRe = ID ? new RegExp('/track/' + ID + '(/|$)') : null;
           const idRe = ID ? new RegExp('(^|[^0-9])' + ID + '([^0-9]|$)') : null;
@@ -351,6 +353,17 @@ class TidalCdp:
             if (location.pathname === n.path) return true;
             if (Date.now() - n.t < 8000) {{ n.path = location.pathname; return true; }}  // the app redirected
             return false;
+          }};
+          const norm = t => (t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+          // the page really is about this track: its own address, a link to it, or its title as a heading
+          const showsTrack = () => {{
+            if (!ID) return false;
+            if (pathRe.test(location.pathname)) return true;
+            const links = Array.from(document.querySelectorAll('a[href]')).filter(a => !inChrome(a));
+            if (links.some(a => pathRe.test((a.getAttribute('href') || '').split('?')[0]))) return true;
+            const t = norm(TITLE);
+            return !!t && Array.from(document.querySelectorAll('h1, h2, [data-test*=title]'))
+              .some(h => !inChrome(h) && norm(h.textContent) === t);
           }};
           const rows = () => Array.from(document.querySelectorAll(S.row)).filter(r => !inChrome(r));
           const strong = r => r.innerHTML.includes(want + '"') || r.innerHTML.includes(want + '?') || r.innerHTML.includes(want + '/')
@@ -435,8 +448,12 @@ class TidalCdp:
                 return False
             self._sleep(0.25)
 
-    def click_play_for_track(self, track_id: str) -> str:
-        """Click the play control for the track; returns the method used ('' = none found)."""
+    def click_play_for_track(self, track_id: str, title: Optional[str] = None) -> str:
+        """Click the play control for the track; returns the method used ('' = none found).
+
+        The page's own play button is only clicked when the page shows that
+        track: if TIDAL took us somewhere else, that button would play
+        something else entirely."""
         js = self._page_js("click", track_id, """
           const row = rowFor();
           if (row) {
@@ -447,7 +464,8 @@ class TidalCdp:
           }
           if (!landed()) return '';
           const h = hero();
-          if (h) { h.click(); return 'hero'; }
+          if (h && showsTrack()) { h.click(); return 'hero'; }
+          if (h) return 'not-this-track';
           const rs = rows();
           if (rs.length && pathRe.test(location.pathname)) {
             const b = playIn(rs[0]);
@@ -455,7 +473,7 @@ class TidalCdp:
             return 'first-row';
           }
           return '';
-        """)
+        """, title=title)
         return str(self.evaluate(js) or "")
 
     # TIDAL's web player keeps its state in a Redux store; TidaLuna's
@@ -650,11 +668,14 @@ class TidalCdp:
         tried = ""
         if self.prepare(track_id, prepare_timeout):
             try:
-                method = self.click_play_for_track(track_id)
+                method = self.click_play_for_track(track_id, title)
             except CdpError as e:
                 method = ""
                 problems.append(f"click failed: {e}")
-            if method:
+            if method == "not-this-track":
+                problems.append("TIDAL showed another page, not the track's (its play button was left alone)")
+                method = ""
+            elif method:
                 out = self._verify(track_id, title, verify_timeout, method)
                 if out.ok:
                     return out
@@ -705,6 +726,37 @@ class TidalCdp:
         return data if isinstance(data, dict) else {}
 
     # -- diagnostics ----------------------------------------------------------
+    def watch_actions(self) -> str:
+        """Start recording what TIDAL's store does (action types and the shape of
+        their payloads), to learn how the app starts a song in its current version."""
+        js = "(() => { /*ts:watch*/" + self._FIND_STORE + """
+          const st = findStore();
+          if (!st) return 'no-store';
+          window.__tsActions = [];
+          if (!st.__tsWrapped) {
+            const orig = st.dispatch.bind(st);
+            st.dispatch = (a) => {
+              try {
+                if (a && typeof a === 'object' && window.__tsActions) {
+                  let p = '';
+                  try { p = JSON.stringify(a.payload, (k, v) => (typeof v === 'string' && v.length > 80) ? v.slice(0, 80) : v); } catch (e) { p = '?'; }
+                  window.__tsActions.push({t: Date.now(), type: String(a.type), payload: (p || '').slice(0, 600)});
+                  if (window.__tsActions.length > 400) window.__tsActions.shift();
+                }
+              } catch (e) {}
+              return orig(a);
+            };
+            st.__tsWrapped = true;
+          }
+          return 'ok';
+        })()"""
+        return str(self.evaluate(js) or "")
+
+    def recorded_actions(self) -> list:
+        data = self.evaluate("(() => { /*ts:watched*/ return window.__tsActions || []; })()")
+        return data if isinstance(data, list) else []
+
+
     def inspect(self, track_id: Optional[str] = None) -> dict:
         """Describe what the player DOM looks like right now (for debugging).
 

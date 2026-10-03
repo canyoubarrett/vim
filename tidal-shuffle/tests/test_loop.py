@@ -826,3 +826,63 @@ def test_max_poll_checks_now_playing_often_while_the_screen_is_up(tmp_path):
     loop.max_poll = 0.5
     loop.run(max_iterations=3)
     assert waits and max(waits) <= 0.5
+
+
+def test_presses_of_next_during_a_switch_do_not_pile_up(tmp_path):
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    loop.step()
+    calls = []
+    loop.request_skip = lambda dry_run=False: calls.append("skip")
+    for _ in range(4):                                  # a burst of presses: one skip
+        loop.post("next")
+    loop.handle_commands()
+    assert calls == ["skip"]
+    loop.post("next")                                   # pressed while a switch was under way
+    import time as _time
+    loop._switched_at = _time.monotonic() + 1
+    loop.handle_commands()
+    assert calls == ["skip"]
+    loop._switched_at = float("-inf")
+    loop.post("next")
+    loop.handle_commands()
+    assert calls == ["skip", "skip"]
+
+
+def test_two_failed_picks_stop_the_backups(tmp_path):
+    many = cands() + [Candidate("Fourth", "Band D", score=0.6, duration=200),
+                      Candidate("Fifth", "Band E", score=0.5, duration=200)]
+    loop, world, clock, logs, history = build(tmp_path, many, {"shuffle": {"strategy": "top", "lookahead": 4}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    loop.step()
+    loop.plan_now()
+    tried = []
+
+    def fail(track):
+        tried.append(track.id)
+        return PlayOutcome(False, "cdp", None, "no play button found on the track page")
+    world.play = fail
+    assert len(loop.state.plan.picks) >= 3
+    assert loop.handoff(clock.mono) is False
+    assert len(tried) == 2
+    assert any("TIDAL may have changed" in m for m in logs)
+
+
+def test_a_snapshot_of_another_song_cannot_end_this_one_early(tmp_path):
+    from tidal_shuffle.models import NowPlaying, TIDAL_BUNDLE_ID
+
+    loop, world, clock, logs, history = build(tmp_path, cands(), {"shuffle": {"strategy": "top"}})
+    world.start("Seed Song", "Seed Artist", duration=300, tidal_id="seed")
+    loop.step()
+    st = loop.state
+    # TIDAL briefly reports another song, 1 s from its end, while ours has minutes to go
+    other = NowPlaying("Other", "Someone", duration=200.0, elapsed=199.0, timestamp=clock.wall, playing=True,
+                       bundle_id=TIDAL_BUNDLE_ID, tidal_id="other")
+    assert loop.remaining(other, clock.mono) > 200
+    # and even a report of this song that disagrees wildly with our clock does not trigger the hand-off
+    odd = NowPlaying("Seed Song", "Seed Artist", duration=300.0, elapsed=299.6, timestamp=clock.wall, playing=True,
+                     bundle_id=TIDAL_BUNDLE_ID, tidal_id="seed")
+    rem = loop.remaining(odd, clock.mono)
+    assert rem < 1 and not loop._ending(rem, clock.mono, 0.8)
+    st.started_at = clock.mono - 299.5                  # really near the end: both agree
+    assert loop._ending(rem, clock.mono, 0.8)

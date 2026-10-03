@@ -654,7 +654,9 @@ def playtest(track, config_path, method):
 @cli.command()
 @click.argument("track", required=False)
 @click.option("--config", "config_path", type=click.Path(path_type=Path))
-def inspect(track, config_path):
+@click.option("--watch", type=int, default=0, metavar="SECONDS",
+              help="Then record what TIDAL does while you start a song by hand (try 20)")
+def inspect(track, config_path, watch):
     """Dump what the TIDAL player page looks like (for fixing selectors).
 
     With TRACK (an id or "Title - Artist") it first opens that track's page
@@ -680,6 +682,16 @@ def inspect(track, config_path):
         cdp.navigate_to_track(tid)
         time.sleep(4)
     console.print(json.dumps(cdp.inspect(tid), indent=2), markup=False)
+    if watch:
+        res = cdp.watch_actions()
+        if res != "ok":
+            console.print(f"could not watch TIDAL's player ({res})", markup=False)
+            return
+        console.print(f"\nNow start any song in TIDAL by hand (click a track's play button). "
+                      f"Recording for {watch} seconds…", markup=False)
+        time.sleep(watch)
+        acts = [a for a in cdp.recorded_actions() if not str(a.get("type", "")).startswith(("@@", "persist/"))]
+        console.print(json.dumps({"actions": acts[-120:]}, indent=2), markup=False)
 
 
 @cli.command()

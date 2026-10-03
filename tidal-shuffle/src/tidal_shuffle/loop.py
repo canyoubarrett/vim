@@ -87,7 +87,8 @@ class ShuffleLoop:
         self.timing_path = timing_path
         self.start_delay: Optional[float] = self._load_start_delay()
         # Commands from the keyboard (terminal keys, media keys), any thread.
-        self.commands: "queue.Queue[str]" = queue.Queue()
+        self.commands: "queue.Queue[tuple[str, float]]" = queue.Queue()
+        self._switched_at = float("-inf")   # when the last switch attempt finished
         self._wake = threading.Event()
         self._quit = False
 
@@ -95,7 +96,9 @@ class ShuffleLoop:
     def remaining(self, np: Optional[NowPlaying], now: float) -> Optional[float]:
         """Seconds left in the current track, from the best information we have."""
         st = self.state
-        if np is not None and np.is_tidal:
+        if np is not None and np.is_tidal and (st.current is None or self._same_as_current(np)):
+            # a snapshot of another song (TIDAL reports half-updated details while it
+            # changes tracks) says nothing about how long this one has left
             rem = np.remaining_at(self._wall())
             if rem is not None:
                 return rem
@@ -109,6 +112,22 @@ class ShuffleLoop:
         if st.current.playing is False:
             return None
         return max(0.0, duration - (now - st.started_at))
+
+    def clock_remaining(self, now: float) -> Optional[float]:
+        """Seconds left by our own clock (when the song started, and its length)."""
+        st = self.state
+        if st.current is None or st.current.playing is False:
+            return None
+        duration = st.current.duration or (st.plan.seed.duration if st.plan is not None else None)
+        return None if duration is None else max(0.0, duration - (now - st.started_at))
+
+    def _ending(self, rem: Optional[float], now: float, lead: float) -> bool:
+        """Is it time to hand off? Both the now-playing report and our own clock
+        must say the song is (nearly) over, so one odd report cannot cut a song short."""
+        if rem is None or rem > lead:
+            return False
+        own = self.clock_remaining(now)
+        return own is None or own <= lead + 2.0
 
     def _matches_expected(self, np: NowPlaying) -> bool:
         exp = self.state.expected
@@ -352,6 +371,13 @@ class ShuffleLoop:
             return False
         st.handed_off = True
         st.handoff_at = now
+        try:
+            return self._try_picks(st)
+        finally:
+            self._switched_at = time.monotonic()
+
+    def _try_picks(self, st) -> bool:
+        failures: list[str] = []
         for pick in st.plan.picks:
             asked = self._clock()
             outcome = self.player.play(pick.track)
@@ -362,15 +388,22 @@ class ShuffleLoop:
                 self._record(pick)
                 return True
             if outcome.method.startswith(("cdp", "luna")):
-                self.log(f"  could not start {pick.track.label()}: {outcome.detail}; trying a backup")
                 st.failed_keys.add(pick.candidate.key)
+                failures.append(outcome.detail)
+                if len(failures) >= 2:
+                    # two picks failed: the way of starting songs is what fails, not
+                    # the picks; more tries would only hold up the music and the keys
+                    self.log(f"  could not start {pick.track.label()}: {outcome.detail}")
+                    break
+                self.log(f"  could not start {pick.track.label()}: {outcome.detail}; trying a backup")
                 continue
             # Deep-link fallback: we cannot verify, so assume the user (or TIDAL) takes it from here.
             self.log(f"▶ opened {pick.track.label()} in TIDAL ({outcome.method}); press play if it does not start")
             self.log(f"   {pick.track.url}")
             st.expected = pick
             return True
-        self.log("⚠ none of the picks could be started")
+        self.log("⚠ none of the picks could be started"
+                 + ("; TIDAL may have changed: run `tidal-shuffle inspect --watch` and send the output" if failures else ""))
         return False
 
     # -- one iteration ----------------------------------------------------------
@@ -504,7 +537,7 @@ class ShuffleLoop:
                     # Preparing takes time; re-read the clock before deciding on the hand-off.
                     now = self._clock()
                     rem = self.remaining(None, now)
-                if not st.handed_off and rem is not None and rem <= lead:
+                if not st.handed_off and self._ending(rem, now, lead):
                     self._handoff_at_end(now)
             elif st.current.duration is None and not st.handed_off and (now - st.started_at) > 20 * 60:
                 self.log("no timing information for 20 minutes; skipping ahead")
@@ -530,15 +563,24 @@ class ShuffleLoop:
     # -- keyboard commands ------------------------------------------------------
     def post(self, command: str) -> None:
         """Queue a command ("playpause", "next", "previous", "help", "quit"); thread safe."""
-        self.commands.put(command)
+        self.commands.put((command, time.monotonic()))
         self._wake.set()
 
     def handle_commands(self, dry_run: bool = False) -> None:
+        batch = []
         while True:
             try:
-                command = self.commands.get_nowait()
+                batch.append(self.commands.get_nowait())
             except queue.Empty:
-                return
+                break
+        skipped = False
+        for command, at in batch:
+            if command == "next":
+                # One skip per burst of presses, and none for presses made while a
+                # switch was under way: they would only pile up and fire later.
+                if skipped or at < self._switched_at:
+                    continue
+                skipped = True
             try:
                 self.handle_command(command, dry_run=dry_run)
             except Exception as e:  # a key press must never stop the music

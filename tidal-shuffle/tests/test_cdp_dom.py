@@ -145,16 +145,32 @@ def test_inspect_reports_the_track_page():
     assert out["clicks"] == []
 
 
+def test_redirect_to_a_page_without_the_track_clicks_nothing():
+    """A play button on whatever page TIDAL went to instead would play something else."""
+    hero = '<h1>New releases</h1><button aria-label="Play" data-mark="hero"></button>'
+    out = run("", [("navigate_to_track", "123"), ("rows_ready", "123", 150), ("click_play_for_track", "123", "Phone Tag")],
+              setup=app(hero, redirect="/home"))
+    assert out["results"][-1] == "not-this-track"
+    assert out["clicks"] == []
+
+
+def test_redirected_page_titled_with_the_track_is_clicked():
+    hero = '<h1>Phone Tag</h1><button aria-label="Play" data-mark="hero"></button>'
+    out = run("", [("navigate_to_track", "123"), ("rows_ready", "123", 150), ("click_play_for_track", "123", "Phone Tag")],
+              setup=app(hero, redirect="/album/7"))
+    assert out["results"][-1] == "hero" and out["clicks"] == ["click:hero"]
+
+
 def test_late_redirect_is_followed():
-    hero = '<button aria-label="Play" data-mark="hero"></button>'
+    hero = '<h1>Them Changes</h1><button aria-label="Play" data-mark="hero"></button>'
     late = """
       window.addEventListener('popstate', () => setTimeout(() => {
         history.replaceState({}, '', '/album/7');
         document.querySelector('main').innerHTML = %s;
       }, 50));
     """ % json.dumps(hero)
-    out = run("", [("navigate_to_track", "123"), ("rows_ready", "123", 150), ("click_play_for_track", "123"),
-                   ("navigate_to_track", "123")], setup=late)
+    out = run("", [("navigate_to_track", "123"), ("rows_ready", "123", 150),
+                   ("click_play_for_track", "123", "Them Changes"), ("navigate_to_track", "123")], setup=late)
     assert out["path"] == "/album/7"
     assert out["results"] == ["pushed", True, "hero", "already"]
     assert out["clicks"] == ["click:hero"]
@@ -203,3 +219,10 @@ def test_queue_next_that_does_not_take():
     setup = QUEUE_STORE.replace("if (a.type === 'playQueue/ADD_NEXT')", "if (false)")
     out = run("", [("store_queue_next", "123")], setup=setup)
     assert out["results"] == ["not-next"]
+
+
+
+def test_watch_records_the_apps_actions():
+    out = run("", [("watch_actions",), ("recorded_actions",)],
+              setup=STORE + "setTimeout(() => {}, 0);")
+    assert out["results"][0] == "ok"
